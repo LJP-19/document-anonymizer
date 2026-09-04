@@ -1,0 +1,269 @@
+# Detection taxonomy (spec section 46). Edit this file to extend coverage;
+# do not hardcode new rules in Python.
+#
+# rule fields:
+#   type            PiiType member name
+#   pattern         Python regex, matched against a single visual line
+#   confidence      base confidence 0..1
+#   validator       optional: luhn | ssn | ein | aba | none
+#   context_any     optional list of lowercase words; presence on the same line
+#                   or the line above raises confidence
+#   context_required if true, the rule only fires when context is present
+#   money_guard     if true, drop matches that sit inside a currency amount
+
+version: 1
+
+rules:
+  - name: ssn_dashed
+    type: SSN
+    pattern: '(?<![\d-])\d{3}-\d{2}-\d{4}(?![\d-])'
+    confidence: 0.97
+    validator: ssn
+    # Context is what lets a structurally invalid but SSN-shaped value survive
+    # as a low-confidence Needs Review item instead of being silently dropped.
+    context_any: [ssn, social, security, taxpayer, employee, tin]
+
+  - name: ssn_spaced
+    type: SSN
+    pattern: '(?<![\d])\d{3}\s\d{2}\s\d{4}(?![\d])'
+    confidence: 0.85
+    validator: ssn
+    context_any: [ssn, social, security, taxpayer]
+
+  - name: itin
+    type: ITIN
+    pattern: '(?<![\d-])9\d{2}-[7-9]\d-\d{4}(?![\d-])'
+    confidence: 0.95
+
+  - name: ein
+    type: EIN
+    pattern: '(?<![\d-])\d{2}-\d{7}(?![\d-])'
+    confidence: 0.9
+    validator: ein
+
+  - name: ip_pin
+    type: IP_PIN
+    pattern: '(?<![\d])\d{6}(?![\d])'
+    confidence: 0.8
+    context_any: [ip pin, identity protection]
+    context_required: true
+
+  - name: email
+    type: EMAIL
+    pattern: '[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}'
+    confidence: 0.98
+
+  - name: phone_us
+    type: PHONE
+    pattern: '(?<![\d\-])(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}(?![\d])'
+    confidence: 0.9
+    money_guard: true
+
+  - name: routing_aba
+    type: ROUTING_NUMBER
+    pattern: '(?<![\d])\d{9}(?![\d])'
+    confidence: 0.75
+    validator: aba
+    context_any: [routing, aba, rtn, transit]
+
+  - name: bank_account
+    type: BANK_ACCOUNT
+    pattern: '(?<![\d])\d{7,17}(?![\d])'
+    confidence: 0.7
+    context_any: [account, acct, checking, savings, brokerage, deposit, iban]
+    context_required: true
+    money_guard: true
+
+  - name: card_number
+    type: CARD_NUMBER
+    pattern: '(?<![\d])(?:\d[ \-]?){13,19}(?![\d])'
+    confidence: 0.9
+    validator: luhn
+    money_guard: true
+
+  - name: iban
+    type: IBAN
+    pattern: '\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b'
+    confidence: 0.9
+
+  - name: swift_bic
+    type: SWIFT_BIC
+    pattern: '\b[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b'
+    confidence: 0.7
+    context_any: [swift, bic]
+    context_required: true
+
+  - name: ipv4
+    type: IP_ADDRESS
+    pattern: '\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b'
+    confidence: 0.85
+
+  - name: mac
+    type: MAC_ADDRESS
+    pattern: '\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b'
+    confidence: 0.95
+
+  - name: uuid
+    type: UUID
+    pattern: '\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b'
+    confidence: 0.95
+
+  - name: us_zip
+    type: POSTAL_CODE
+    pattern: '(?<![\d\-])\d{5}(?:-\d{4})?(?![\d\-])'
+    confidence: 0.55
+    context_any: [zip, postal, address, city, state]
+    money_guard: true
+
+  - name: city_state_zip
+    type: ADDRESS
+    pattern: '\b[A-Z][A-Za-z.\- ]{1,28},\s*(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\.?(?:\s+\d{5}(?:-\d{4})?)?\b'
+    confidence: 0.85
+
+  - name: street_address
+    type: STREET
+    pattern: '\b\d{1,6}\s+[A-Z0-9][A-Za-z0-9.\- ]{2,40}\s(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct|Way|Circle|Cir|Place|Pl|Terrace|Ter|Parkway|Pkwy|Highway|Hwy|Suite|Ste|Unit|Apt)\b\.?'
+    confidence: 0.85
+
+  - name: po_box
+    type: PO_BOX
+    pattern: '\bP\.?\s?O\.?\s?Box\s+\d+\b'
+    confidence: 0.9
+
+  - name: dob
+    type: DOB
+    pattern: '\b(?:0?[1-9]|1[0-2])[/\-](?:0?[1-9]|[12]\d|3[01])[/\-](?:19|20)\d{2}\b'
+    confidence: 0.8
+    context_any: [birth, dob, born, d.o.b]
+    context_required: true
+
+  - name: drivers_license
+    type: DRIVERS_LICENSE
+    pattern: '\b[A-Z]\d{7,12}\b'
+    confidence: 0.75
+    context_any: [driver, license, licence, dl no, state id]
+    context_required: true
+
+  - name: passport
+    type: PASSPORT
+    pattern: '\b[A-Z0-9]{6,9}\b'
+    confidence: 0.75
+    context_any: [passport]
+    context_required: true
+
+  - name: policy_number
+    type: POLICY_NUMBER
+    pattern: '\b[A-Z0-9][A-Z0-9\-]{4,19}\b'
+    confidence: 0.7
+    context_any: ['policy no', 'policy number', 'policy #', 'contract number']
+    context_required: true
+
+  - name: member_id
+    type: MEMBER_ID
+    pattern: '\b[A-Z0-9][A-Z0-9\-]{4,19}\b'
+    confidence: 0.7
+    context_any: [member id, subscriber id, health plan, group number]
+    context_required: true
+
+  - name: mrn
+    type: MRN
+    pattern: '\b[A-Z0-9\-]{5,15}\b'
+    confidence: 0.7
+    context_any: [medical record, mrn, patient id, chart number]
+    context_required: true
+
+  - name: claim_number
+    type: CLAIM_NUMBER
+    pattern: '\b[A-Z0-9][A-Z0-9\-]{4,19}\b'
+    confidence: 0.7
+    context_any: ['claim number', 'claim no', 'claim #']
+    context_required: true
+
+  - name: case_number
+    type: CASE_NUMBER
+    pattern: '\b[0-9]{1,4}[:\-][A-Za-z0-9\-]{3,20}\b'
+    confidence: 0.75
+    context_any: [case, docket, matter]
+    context_required: true
+
+  - name: employee_id
+    type: EMPLOYEE_ID
+    pattern: '\b[A-Z]{0,3}\d{4,10}\b'
+    confidence: 0.7
+    context_any: ['employee id', 'employee no', 'personnel', 'badge', 'payroll id', 'emp #']
+    context_required: true
+
+  - name: customer_id
+    type: CUSTOMER_ID
+    pattern: '\b[A-Z0-9][A-Z0-9\-]{3,19}\b'
+    confidence: 0.65
+    context_any: [customer id, client id, customer no, client no, account id]
+    context_required: true
+
+  - name: username
+    type: USERNAME
+    pattern: '(?<![\w@])@[A-Za-z0-9_]{3,30}\b'
+    confidence: 0.7
+    context_any: [username, user name, handle, twitter, instagram, login]
+
+# ---------------------------------------------------------------------------
+# Field labels (spec sections 13-15). `expects` drives coverage analysis:
+# every listed type must be found inside the label's value group, otherwise the
+# group is flagged PARTIAL and sent to review.
+# ---------------------------------------------------------------------------
+labels:
+  - pattern: 'name[, ]+address[, ]*(and)?[ ]*(zip|postal)( code)?'
+    expects: [PERSON, ADDRESS, POSTAL_CODE]
+  - pattern: 'name[, ]+(and )?address'
+    expects: [PERSON, ADDRESS]
+  - pattern: '(responsible party|authorized signer|managing member|general partner|trustee|executor|fiduciary|beneficiary|principal officer)'
+    expects: [PERSON]
+  - pattern: '(taxpayer|spouse|employee|employer|client|customer|patient|member|insured|owner|shareholder|partner|applicant|borrower|guarantor)?\s*(full |legal |first |last |middle |maiden |preferred |business |trade )?name'
+    expects: [PERSON]
+  - pattern: '(mailing |home |business |street |residential |permanent |previous |registered |principal )?address'
+    expects: [ADDRESS]
+  - pattern: '(city|town)[, ]*(state)?[, ]*(zip|postal)?( code)?'
+    expects: [ADDRESS]
+  - pattern: '(zip|postal)( code)?'
+    expects: [POSTAL_CODE]
+  - pattern: '(ssn|social security( number| no\.?| #)?)'
+    expects: [SSN]
+  - pattern: '(ein|employer identification( number| no\.?)?|federal (tax )?id)'
+    expects: [EIN]
+  - pattern: '(itin|individual taxpayer identification)'
+    expects: [ITIN]
+  - pattern: '(tin|taxpayer (identification|id)( number)?|tax id( number)?)'
+    expects: [TIN]
+  - pattern: '(e-?mail( address)?)'
+    expects: [EMAIL]
+  - pattern: '(phone|telephone|mobile|cell|fax)( number| no\.?| #)?'
+    expects: [PHONE]
+  - pattern: '(date of birth|birth date|dob|d\.o\.b\.?)'
+    expects: [DOB]
+  - pattern: '(bank|checking|savings|brokerage|investment|retirement|deposit)?\s*account( number| no\.?| #)?'
+    expects: [BANK_ACCOUNT]
+  - pattern: '(routing( number| no\.?| #)?|aba( number)?)'
+    expects: [ROUTING_NUMBER]
+  - pattern: '(policy)( number| no\.?| #)?'
+    expects: [POLICY_NUMBER]
+  - pattern: '(member|subscriber|patient) id'
+    expects: [MEMBER_ID]
+  - pattern: '(employee|personnel|payroll|badge) (id|number|no\.?|#)'
+    expects: [EMPLOYEE_ID]
+  - pattern: '(driver.?s? licen[cs]e|state id)( number| no\.?| #)?'
+    expects: [DRIVERS_LICENSE]
+  - pattern: 'passport( number| no\.?| #)?'
+    expects: [PASSPORT]
+  - pattern: '(case|docket|matter|file)( number| no\.?| #)'
+    expects: [CASE_NUMBER]
+
+# Labels whose values are business facts, never PII (spec sections 12 and 85).
+# Values under these labels are excluded from group-level redaction.
+non_pii_labels:
+  - '(gross |net |annual |monthly |total |taxable |adjusted )?(wages|salary|income|revenue|receipts|compensation|earnings|pay)'
+  - '(total|subtotal|balance|amount|amount due|amount owed|payment|refund|credit|debit)'
+  - '(federal|state|local|income|payroll|self-?employment)? ?(tax|taxes|withholding|withheld|liability)'
+  - '(deduction|deductions|expense|expenses|contribution|contributions|distribution|basis|depreciation)'
+  - '(rate|percentage|percent|apr|yield|allocation)'
+  - '(tax year|year|period|quarter|form|schedule|line|page|part|section|box)( number| no\.?| #)?'
+  - '(units|shares|quantity|count|hours)'
