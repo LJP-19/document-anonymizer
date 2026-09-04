@@ -3,7 +3,7 @@
   "branch": "main",
   "application_name": "Document Anonymizer",
   "version": "0.2.0",
-  "publisher": "Turnkey Financial Solutions",
+  "publisher": "TFS",
   "git_name": "LJP-19",
   "git_email": "lanzpascual219@gmail.com",
   "commit_message": "Release v0.2.0",
