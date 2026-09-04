@@ -1,0 +1,8 @@
+# Pinned for reproducible CI builds (spec section 73).
+pymupdf==1.28.2
+PySide6==6.9.1
+spacy==3.8.16
+Faker==37.1.0
+PyYAML==6.0.2
+# The English model is installed from a pinned wheel URL in CI and in
+# scripts/bootstrap.py; it is bundled into the package, never downloaded at runtime.

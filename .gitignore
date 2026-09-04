@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+out/
+*.spec
+.pytest_cache/
+.DS_Store
+*.anonymized.pdf
+*.anon.pdf

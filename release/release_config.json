@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/LJP-19/document-anonymizer.git",
+  "branch": "main",
+  "application_name": "Document Anonymizer",
+  "version": "0.2.0",
+  "publisher": "Turnkey Financial Solutions",
+  "git_name": "LJP-19",
+  "git_email": "lanzpascual219@gmail.com",
+  "commit_message": "Release v0.2.0",
+  "build_windows": true,
+  "build_macos": true,
+  "run_tests_before_push": true,
+  "create_github_release": true
+}

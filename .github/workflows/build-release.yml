@@ -1,0 +1,148 @@
+name: Build and release
+
+# Builds run on native GitHub-hosted runners because the .exe and .dmg cannot be
+# produced from a Linux development machine (spec section 57).
+#
+# Push to the branch  -> builds, uploads artifacts.
+# Push a v* tag       -> builds, uploads artifacts, publishes a GitHub Release.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.12"
+  # Pinned model wheel. Installed from a URL, never downloaded by the app itself.
+  SPACY_MODEL_WHEEL: "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+
+jobs:
+  test:
+    name: Tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install "${SPACY_MODEL_WHEEL}"
+      - name: Run the regression suite
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0
+          python -m pytest tests -q
+      - name: End-to-end CLI run on synthetic fixtures
+        run: |
+          python -m tests.fixtures build/fixtures
+          python -m app.cli process build/fixtures/form.pdf --accept-all -o build/form.anon.pdf
+          python -m app.cli process build/fixtures/stacked.pdf --accept-all -o build/stacked.anon.pdf
+
+  windows:
+    name: Windows .exe
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install pyinstaller==6.11.1
+          pip install "${env:SPACY_MODEL_WHEEL}"
+      - name: Confirm the model is installed before packaging
+        run: python -c "import spacy; spacy.load('en_core_web_sm'); print('model OK')"
+      - name: Run the regression suite on this runner
+        # The Linux job gates the build, but PyMuPDF text extraction, font
+        # metrics and path handling differ per platform - and this is the exact
+        # machine that produces the installer.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests -q
+      - name: End-to-end CLI run on this runner
+        run: |
+          python -m tests.fixtures build/fixtures
+          python -m app.cli process build/fixtures/form.pdf --accept-all -o build/form.anon.pdf
+          python -m app.cli process build/fixtures/stacked.pdf --accept-all -o build/stacked.anon.pdf
+      - name: Build
+        run: python buildtools/build.py
+      - name: Read version
+        id: v
+        shell: bash
+        run: echo "version=$(python -c 'import app.version;print(app.version.__version__)')" >> $GITHUB_OUTPUT
+      - name: Name the artifact
+        shell: bash
+        run: |
+          mkdir -p out
+          cp -r dist/DocumentAnonymizer "out/DocumentAnonymizer-Windows-v${{ steps.v.outputs.version }}"
+          cd out && 7z a "DocumentAnonymizer-Windows-v${{ steps.v.outputs.version }}.zip" "DocumentAnonymizer-Windows-v${{ steps.v.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DocumentAnonymizer-Windows-v${{ steps.v.outputs.version }}
+          path: out/*.zip
+          if-no-files-found: error
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: out/*.zip
+          generate_release_notes: true
+
+  macos:
+    name: macOS .dmg
+    needs: test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install pyinstaller==6.11.1
+          pip install "$SPACY_MODEL_WHEEL"
+      - name: Confirm the model is installed before packaging
+        run: python -c "import spacy; spacy.load('en_core_web_sm'); print('model OK')"
+      - name: Run the regression suite on this runner
+        # The Linux job gates the build, but PyMuPDF text extraction, font
+        # metrics and path handling differ per platform - and this is the exact
+        # machine that produces the installer.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests -q
+      - name: End-to-end CLI run on this runner
+        run: |
+          python -m tests.fixtures build/fixtures
+          python -m app.cli process build/fixtures/form.pdf --accept-all -o build/form.anon.pdf
+          python -m app.cli process build/fixtures/stacked.pdf --accept-all -o build/stacked.anon.pdf
+      - name: Build .app and .dmg
+        run: python buildtools/build.py --dmg
+      - name: Read version
+        id: v
+        run: echo "version=$(python -c 'import app.version;print(app.version.__version__)')" >> $GITHUB_OUTPUT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DocumentAnonymizer-macOS-v${{ steps.v.outputs.version }}
+          path: dist/*.dmg
+          if-no-files-found: error
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: dist/*.dmg
+          generate_release_notes: true
