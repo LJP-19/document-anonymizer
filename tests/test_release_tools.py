@@ -118,11 +118,31 @@ def test_release_config_holds_no_credentials():
     assert not [k for k in config if any(f in k.lower() for f in forbidden)]
 
 
-def test_launchers_exist_and_are_executable():
+def test_launchers_exist():
     assert (ROOT / "PUBLISH.bat").exists()
-    command = ROOT / "PUBLISH.command"
-    assert command.exists()
-    assert command.stat().st_mode & 0o111, "PUBLISH.command is not executable"
+    assert (ROOT / "PUBLISH.command").exists()
+
+
+def test_shell_launchers_are_executable_in_the_repository():
+    """The exec bit must live in the git index, not on the local filesystem.
+
+    Windows cannot represent it, so checking `stat()` fails for anyone who
+    publishes from Windows even though the committed file is correct. What
+    matters is the mode a macOS user gets when they clone.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "ls-files", "-s", "--", "PUBLISH.command", "release/release.command"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        pytest.skip("not a git checkout")
+    for line in result.stdout.strip().splitlines():
+        mode, _, path = line.partition(" ")[0], None, line.split("\t")[-1]
+        assert mode == "100755", f"{path} is committed as {mode}, expected 100755"
 
 
 # --- interpreter compatibility ---------------------------------------------

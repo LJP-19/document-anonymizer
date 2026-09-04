@@ -24,6 +24,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = Path(__file__).resolve().parent / "release_config.json"
 
+#: Files that must be executable for a macOS user who clones this repository.
+#: The bit is set in the git index, not on disk, because Windows has no way to
+#: represent it and would otherwise strip it on every publish.
+EXECUTABLE_FILES = [
+    "PUBLISH.command",
+    "release/release.command",
+    "release/release.py",
+    "release/update.py",
+]
+
 REQUIRED_FILES = [
     "main.py",
     "app/version.py",
@@ -220,6 +230,7 @@ def commit_and_push(config: dict, version: str, dirty: list[str]) -> str:
 
     if dirty:
         git("add", "-A")
+        _mark_executables()
         message = config.get("commit_message") or f"Release v{version}"
         commit = git("commit", "-m", message, check=False)
         if commit.returncode != 0 and "nothing to commit" not in commit.stdout:
@@ -302,6 +313,21 @@ def _rebase_and_retry(branch: str):
         )
     ok("rebased onto the remote")
     return git("push", "-u", "origin", branch, check=False)
+
+
+def _mark_executables() -> None:
+    """Record the exec bit in the git index for the shell launchers."""
+    fixed = []
+    for relative in EXECUTABLE_FILES:
+        if not (ROOT / relative).exists():
+            continue
+        entry = git("ls-files", "-s", "--", relative, check=False).stdout.strip()
+        if entry.startswith("100755"):
+            continue
+        if git("update-index", "--chmod=+x", "--", relative, check=False).returncode == 0:
+            fixed.append(relative)
+    if fixed:
+        ok(f"marked executable: {', '.join(fixed)}")
 
 
 def report(config: dict, version: str, commit_sha: str) -> None:
