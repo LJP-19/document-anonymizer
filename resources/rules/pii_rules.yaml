@@ -238,14 +238,8 @@ labels:
     expects: [EMAIL]
   - pattern: '(phone|telephone|mobile|cell|fax)( number| no\.?| #)?'
     expects: [PHONE]
-  - pattern: '(date of birth|birth date|dob|d\.o\.b\.?|born on)'
+  - pattern: '(date of birth|birth date|dob|d\.o\.b\.?)'
     expects: [DOB]
-  - pattern: '((country|countries) of )?(citizenship|nationality|citizen of)'
-    expects: [CITIZENSHIP]
-  - pattern: '(place|city|country) of birth|birthplace|born in'
-    expects: [BIRTHPLACE]
-  - pattern: '(sex|gender)'
-    expects: [GENDER]
   - pattern: '(bank|checking|savings|brokerage|investment|retirement|deposit)?\s*account( number| no\.?| #)?'
     expects: [BANK_ACCOUNT]
   - pattern: '(routing( number| no\.?| #)?|aba( number)?)'
@@ -274,3 +268,4 @@ non_pii_labels:
   - '(tax year|year|period|quarter|form|schedule|line|page|part|section|box)( number| no\.?| #)?'
   - '(units|shares|quantity|count|hours)'
   - '(occupation|job title|profession|filing status|status|marital status)'
+  - '(country|citizenship|residency)'

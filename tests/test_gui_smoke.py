@@ -1,4 +1,4 @@
-"""Headless GUI smoke tests for the tabbed batch workspace."""
+"""Headless GUI smoke test (spec section 56). Runs in CI with the offscreen platform."""
 
 from __future__ import annotations
 
@@ -7,15 +7,14 @@ import os
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("DOCANON_LLM", "0")
 
 pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from app.batch import ItemState  # noqa: E402
 from app.decisions.manager import DecisionState  # noqa: E402
-from app.ui.main_window import DocumentTab, MainWindow  # noqa: E402
+from app.session import AnonymizationSession  # noqa: E402
+from app.ui.main_window import MainWindow  # noqa: E402
 from tests import fixtures  # noqa: E402
 
 
@@ -23,130 +22,70 @@ from tests import fixtures  # noqa: E402
 def qapp():
     app = QApplication.instance() or QApplication([])
     yield app
-    # Close anything still open so no render thread outlives the interpreter.
-    for widget in app.topLevelWidgets():
-        widget.close()
-    app.processEvents()
 
 
-def _window(tmp_path, count: int = 2) -> MainWindow:
+def _opened(tmp_path) -> MainWindow:
+    pdf = fixtures.form_pdf(tmp_path / "form.pdf")
     window = MainWindow()
-    window.output_edit.setText(str(tmp_path / "out"))
-    sources = []
-    for index in range(count):
-        sources.append(fixtures.form_pdf(tmp_path / f"doc{index}.pdf"))
-    items = window.batch.add_files(sources)
-    for item in items:
-        tab = DocumentTab(item)
-        tab.changed.connect(window._refresh_queue)
-        window.tabs.addTab(tab, item.name)
-        window.tabs_by_item[item.source_path] = tab
-        window.batch.analyse(item)
-        tab.populate()
-    window._refresh_queue()
+    window.session = AnonymizationSession(source_path=pdf)
+    window.session.analyse()
+    window._on_analyzed(None)
     return window
 
 
-def test_one_tab_per_document(qapp, tmp_path):
-    window = _window(tmp_path, 3)
-    assert window.tabs.count() == 3
-    assert all(isinstance(window.tabs.widget(i), DocumentTab) for i in range(3))
+def test_window_analyzes_and_lists_detections(qapp, tmp_path):
+    window = _opened(tmp_path)
+    window._set_filter("all")
+    assert window.cards, "no detection cards were built"
+    assert window.export_button.isEnabled()
+    assert window.page_total.text().startswith("of ")
     window.close()
 
 
-def test_approving_a_tab_puts_it_in_the_queue(qapp, tmp_path):
-    window = _window(tmp_path)
-    assert not window.process_button.isEnabled()
-    window.tabs.widget(0).approve()
-    assert window.batch.approved
-    assert window.process_button.isEnabled()
-    assert "1 approved" in window.queue_label.text()
-    assert window.tabs.tabText(0).startswith("\u2713")
+def test_preview_is_a_real_render_of_the_transformed_document(qapp, tmp_path):
+    window = _opened(tmp_path)
+    png = window.session.preview_transformed(0)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
     window.close()
 
 
-def test_dismissing_a_tab_keeps_it_out_of_the_queue(qapp, tmp_path):
-    window = _window(tmp_path)
-    window.tabs.widget(0).dismiss()
-    assert not window.batch.approved
-    assert "dismissed" in window.queue_label.text()
+def test_selecting_a_card_focuses_it_and_draws_overlays(qapp, tmp_path):
+    window = _opened(tmp_path)
+    window._set_filter("all")
+    group = window.cards[0].group
+    window._on_card_selected(group)
+    assert window.selected_key == (group.pii_type, group.normalized)
+    assert window.left_canvas._overlays, "no highlight overlays drawn"
     window.close()
 
 
-def test_only_approved_documents_are_written(qapp, tmp_path):
-    window = _window(tmp_path)
-    tab = window.tabs.widget(0)
-    tab.session.decisions.set_state(tab.session.candidates, DecisionState.ACCEPTED)
-    tab.approve()
-    done = window.batch.process_approved()
-    assert len(done) == 1
-    assert len(list((tmp_path / "out").glob("*.pdf"))) == 1
+def test_keep_moves_an_item_out_of_the_redaction_plan(qapp, tmp_path):
+    window = _opened(tmp_path)
+    window._set_filter("all")
+    group = window.cards[0].group
+    window._on_card_decided(group, DecisionState.SKIPPED)
+    plan = window.session.plan()
+    assert group.display.lower() in [v.lower() for v in plan.skipped_values]
+    assert group.candidates[0].id not in {t.candidate_id for t in plan.targets}
     window.close()
 
 
-def test_results_view_lists_changes_and_previews_the_output(qapp, tmp_path):
-    window = _window(tmp_path, 1)
-    tab = window.tabs.widget(0)
-    tab.session.decisions.set_state(tab.session.candidates, DecisionState.ACCEPTED)
-    tab.approve()
-    done = window.batch.process_approved()
-    window._on_processed(done)
-
-    assert window.stack.currentWidget() is window.results
-    assert window.results.table.rowCount() > 0
-    headers = [window.results.table.horizontalHeaderItem(i).text() for i in range(4)]
-    assert headers == ["Type", "Original", "Pseudonym", "Pages"]
-    originals = {window.results.table.item(r, 1).text() for r in range(window.results.table.rowCount())}
-    assert "John Smith" in originals
-    assert window.results.preview.views, "no redacted preview rendered"
+def test_filters_partition_the_detections(qapp, tmp_path):
+    window = _opened(tmp_path)
+    window._set_filter("all")
+    total = len(window.cards)
+    window._set_filter("kept")
+    assert not window.cards
+    window._set_filter("flagged")
+    assert len(window.cards) <= total
     window.close()
 
 
-def test_start_over_clears_tabs_but_not_written_files(qapp, tmp_path):
-    window = _window(tmp_path, 1)
-    tab = window.tabs.widget(0)
-    tab.session.decisions.set_state(tab.session.candidates, DecisionState.ACCEPTED)
-    tab.approve()
-    window.batch.process_approved()
-    written = list((tmp_path / "out").glob("*.pdf"))
-    assert written
-
-    window.batch.clear()
-    for index in reversed(range(window.tabs.count())):
-        window.tabs.removeTab(index)
-    window.tabs_by_item = {}
-    window._refresh_queue()
-
-    assert window.tabs.count() == 0
-    assert list((tmp_path / "out").glob("*.pdf")) == written
-    window.close()
-
-
-def test_reviewed_items_move_to_the_done_tab(qapp, tmp_path):
-    window = _window(tmp_path, 1)
-    tab = window.tabs.widget(0)
-    tab.set_filter("all")
-    group = tab.cards[0].group
-    tab.set_filter("reviewed")
-    assert not tab.cards
-    tab.mark_reviewed(group, True)
-    tab.set_filter("reviewed")
-    keys = [(c.group.pii_type, c.group.normalized) for c in tab.cards]
-    assert (group.pii_type, group.normalized) in keys
-    window.close()
-
-
-def test_output_folder_is_customizable(qapp, tmp_path):
-    window = MainWindow()
-    window.output_edit.setText(str(tmp_path / "custom"))
-    assert window.batch.output_folder == str(tmp_path / "custom")
-    window.output_edit.setText("")
-    assert window.batch.output_folder is None
-    window.close()
-
-
-def test_zoom_defaults_to_one_hundred_percent(qapp, tmp_path):
-    window = _window(tmp_path, 1)
-    tab = window.tabs.widget(0)
-    assert tab.zoom == 1.0 and tab.zoom_slider.value() == 100
+def test_search_narrows_the_list(qapp, tmp_path):
+    window = _opened(tmp_path)
+    window._set_filter("all")
+    window._on_search("zzzz-no-such-value")
+    assert not window.cards
+    window._on_search("")
+    assert window.cards
     window.close()

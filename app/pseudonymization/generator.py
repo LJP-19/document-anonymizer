@@ -104,23 +104,6 @@ def generate(pii_type: PiiType, value: str, scope: str = "document") -> str:
         d = fake.date_of_birth(minimum_age=22, maximum_age=80)
         return d.strftime("%m/%d/%Y") if "/" in value else d.strftime("%m-%d-%Y")
 
-    if pii_type is PiiType.GENDER:
-        # Must differ from the original, or the value survives the redaction and
-        # verification correctly reports the original as still present.
-        current = value.strip().lower()
-        if len(current) <= 2:
-            return "F" if current.startswith("m") else "M"
-        return "female" if current.startswith("m") else "male"
-
-    if pii_type is PiiType.CITIZENSHIP:
-        return fake.country()
-
-    if pii_type is PiiType.BIRTHPLACE:
-        return f"{fake.city()}, {fake.country()}" if "," in value else fake.city()
-
-    if pii_type is PiiType.MARITAL_STATUS:
-        return value  # a filing-relevant fact; never altered
-
     if pii_type is PiiType.UNCLASSIFIED_GROUP_VALUE:
         return _pseudonym_for_unclassified(value, fake, seed)
 

@@ -14,7 +14,6 @@ from typing import Optional
 import pymupdf
 
 from ..detection.deterministic import financial_tokens
-from ..document.hidden import extract_hidden, residual_hidden_pii
 from ..transform.plan import TransformationPlan
 
 RED_INT = 0xFF0000
@@ -122,7 +121,6 @@ def verify(plan: TransformationPlan, output_path: str) -> VerificationReport:
             _check_group_completeness(report, plan, out_norm)
             _check_partial_redaction(report, plan, out_norm)
             _check_group_residue(report, plan, out_norm)
-            _check_hidden_content(report, plan, output_path)
             _check_financials(report, src_text, out_text)
             _check_unsupported_content(report, plan)
             _check_layout_sanity(report, plan, out)
@@ -257,31 +255,6 @@ def _check_group_residue(report: VerificationReport, plan: TransformationPlan, o
         "all group value lines fully transformed"
         if not residue
         else f"{len(residue)} fragment(s) of accepted field group values survive",
-    )
-
-
-def _check_hidden_content(report: VerificationReport, plan: TransformationPlan, output_path: str) -> None:
-    """Document properties, annotations, attachments and bookmarks (section 42)."""
-    survivors = residual_hidden_pii(output_path, [t.original for t in plan.targets])
-    report.add(
-        "hidden content carries no accepted PII",
-        not survivors,
-        "properties, annotations and bookmarks are clean"
-        if not survivors
-        else f"{len(survivors)} accepted value(s) survive in document properties, "
-        "annotations or bookmarks",
-    )
-    remaining = extract_hidden(output_path)
-    attachments = remaining.of_kind(__import__(
-        "app.document.hidden", fromlist=["HiddenKind"]).HiddenKind.ATTACHMENT)
-    annotations = remaining.of_kind(__import__(
-        "app.document.hidden", fromlist=["HiddenKind"]).HiddenKind.ANNOTATION)
-    report.add(
-        "embedded attachments and annotations removed",
-        not attachments and not annotations,
-        "none remain"
-        if not attachments and not annotations
-        else f"{len(attachments)} attachment(s) and {len(annotations)} annotation(s) remain",
     )
 
 

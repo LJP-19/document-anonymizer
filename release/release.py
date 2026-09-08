@@ -174,16 +174,6 @@ def preflight(config: dict) -> tuple[str, list[str]]:
         )
     ok(f"branch {config['branch']}")
 
-    # Do this last in preflight: it needs the remote configured, and it may
-    # rewrite app/version.py, which must then be part of the commit.
-    if config.get("create_github_release", True):
-        remote_url = config["repository"]
-        if git("remote", "get-url", "origin", check=False).returncode != 0:
-            git("remote", "add", "origin", remote_url, check=False)
-        version = ensure_unique_version(config, version)
-
-    check_tree_is_consistent()
-
     status = git("status", "--porcelain").stdout.splitlines()
     if status:
         ok(f"{len(status)} local change(s) will be committed")
@@ -191,108 +181,6 @@ def preflight(config: dict) -> tuple[str, list[str]]:
         warn("working tree is clean - nothing new to commit")
 
     return version, status
-
-
-#: Imported before every push. A half-merged tree - new files present, edited
-#: files left at an older version - imports cleanly file by file but fails the
-#: moment one module references a name another was supposed to add.
-CONSISTENCY_MODULES = [
-    "app.detection.types",
-    "app.detection.engine",
-    "app.detection.auditor",
-    "app.detection.gliner",
-    "app.detection.entities_pass",
-    "app.document.hidden",
-    "app.entities.roster",
-    "app.session",
-    "app.batch",
-    "app.transform.plan",
-    "app.export.redactor",
-    "app.verification.verifier",
-]
-
-
-def check_tree_is_consistent() -> None:
-    """Import every module together, so a mismatched tree fails here not in CI.
-
-    This exists because a merge once left new files alongside old versions of
-    the files they depend on. Everything looked fine locally until the build
-    ran and `PiiType.CITIZENSHIP` did not exist.
-    """
-    script = (
-        "import importlib, sys\n"
-        f"mods = {CONSISTENCY_MODULES!r}\n"
-        "for name in mods:\n"
-        "    importlib.import_module(name)\n"
-        "print('ok')\n"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        env={**__import__("os").environ, "DOCANON_LLM": "0", "QT_QPA_PLATFORM": "offscreen"},
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip().splitlines()
-        stop(
-            "the project files are inconsistent with each other:\n"
-            + "\n".join(f"    {line}" for line in detail[-6:])
-            + "\n\n  This usually means a merge kept an older version of a file that "
-            "newer\n  files depend on. Re-apply the latest build over the project and "
-            "try again."
-        )
-    ok(f"{len(CONSISTENCY_MODULES)} core modules import together")
-
-
-def _tag_exists(tag: str) -> bool:
-    """True if the tag exists locally or on the remote."""
-    if git("rev-parse", "-q", "--verify", f"refs/tags/{tag}", check=False).returncode == 0:
-        return True
-    remote = git("ls-remote", "--tags", "origin", f"refs/tags/{tag}", check=False)
-    return bool(remote.stdout.strip())
-
-
-def _bump_patch(version: str) -> str:
-    parts = version.split(".")
-    while len(parts) < 3:
-        parts.append("0")
-    try:
-        parts[-1] = str(int(parts[-1]) + 1)
-    except ValueError:
-        parts.append("1")
-    return ".".join(parts)
-
-
-def ensure_unique_version(config: dict, version: str) -> str:
-    """Never reuse a tag. Advance the version until it names a new release.
-
-    Reusing a tag means the Releases page silently replaces yesterday's
-    installers with today's, and anyone who downloaded the old ones has no way
-    to tell. If the current version is already published, the patch number is
-    advanced and written back to app/version.py, which stays the single source
-    of truth.
-    """
-    git("fetch", "--tags", "origin", check=False)
-    if not _tag_exists(f"v{version}"):
-        ok(f"v{version} is a new release")
-        return version
-
-    original = version
-    while _tag_exists(f"v{version}"):
-        version = _bump_patch(version)
-    warn(f"v{original} is already published; releasing v{version} instead")
-
-    version_file = ROOT / "app" / "version.py"
-    text = version_file.read_text()
-    version_file.write_text(
-        re.sub(r'__version__\s*=\s*"[^"]+"', f'__version__ = "{version}"', text, count=1)
-    )
-    config["version"] = version
-    config["commit_message"] = f"Release v{version}"
-    CONFIG_PATH.write_text(json.dumps(config, indent=2) + "\n")
-    ok(f"version advanced to {version} in app/version.py")
-    return version
 
 
 def run_tests(config: dict) -> None:
@@ -374,11 +262,10 @@ def commit_and_push(config: dict, version: str, dirty: list[str]) -> str:
 
     if config.get("create_github_release", True):
         tag = f"v{version}"
-        if _tag_exists(tag):
-            stop(
-                f"tag {tag} already exists. That should not happen - the version is "
-                "made unique before committing. Bump __version__ in app/version.py."
-            )
+        if git("rev-parse", tag, check=False).returncode == 0:
+            warn(f"tag {tag} already exists locally; moving it to this commit")
+            git("tag", "-d", tag, check=False)
+            git("push", "origin", f":refs/tags/{tag}", check=False)
         git("tag", "-a", tag, "-m", f"{config.get('application_name', 'Release')} {tag}")
         tag_push = git("push", "origin", tag, check=False)
         if tag_push.returncode != 0:

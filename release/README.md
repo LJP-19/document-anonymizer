@@ -50,16 +50,6 @@ then GitHub Actions builds on native runners:
 Installers appear at `<your repo>/releases` (tagged runs) or under
 `<your repo>/actions` -> latest run -> **Artifacts** (untagged pushes).
 
-## Versions and tags
-
-Every release gets a new tag. Before committing, the launcher fetches the remote
-tags and checks whether `v<version>` already exists; if it does, the patch number
-is advanced (`v0.7.0` -> `v0.7.1`) and written back to `app/version.py`.
-
-It never moves or deletes a tag. Reusing one would silently replace the
-installers already attached to that release, and anyone who downloaded the old
-build would have no way to tell.
-
 ## What the launcher will not do
 
 - run `git reset --hard`, `git checkout --force`, or `git clean`

@@ -21,23 +21,6 @@ What is implemented and covered by tests:
 | Scanned / image-only page detection (`OCR REQUIRED`) | done |
 | Deterministic rule detection (30 rules, external YAML) | done |
 | Local spaCy NER | done |
-| GLiNER label-conditioned PII model (ONNX, offline) | done |
-| Joint / compound name fields ("JP & ML") split per person | done |
-| Subject identification and document-wide propagation | done |
-| LLM audit pass (Qwen2.5-1.5B, Apache-2.0, offline) | done |
-| Client roster + pseudonym mapping workbook | done |
-| DOB, citizenship, birthplace, gender categories | done |
-| Name titles and suffixes (Jr, III, Dr) | done |
-| Measurement harness (precision/recall) | **not started** |
-| Progress reporting in the UI | **not started** |
-| Metadata / annotations / attachments / bookmarks stripped | done |
-| Network-blocked test proving offline operation | done |
-| Batch: tabs, approve/dismiss, queue, cancel | done |
-| Custom input files or folder, custom output folder | done |
-| Completion view: what changed + redacted preview | done |
-| Application icon | done |
-| OCR for scanned pages | **not started** |
-| Per-type confidence thresholds | **not started** |
 | Field-label detection and label protection | done |
 | Stacked and compound logical field groups | done |
 | Coverage / completeness analysis | done |
@@ -69,7 +52,6 @@ macOS and refuses to build an installer unless it passes.
 
 ```bash
 python -m pip install -r requirements-dev.txt
-python buildtools/fetch_models.py   # ~50 MB, once
 python -m pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 ```
 
@@ -168,20 +150,7 @@ documents before they leave the firm, a false positive costs a pseudonymised
 business fact; a false negative leaks a client. Use **Keep** on anything that
 should stay.
 
-**Detection runs in four layers.** Deterministic rules (SSN, EIN, routing
-checksums) still beat any model on structured identifiers. GLiNER
-(`knowledgator/gliner-pii-edge-v1.0`, Apache-2.0, 46 MB quantised ONNX) supplies
-labelled entities - it takes the label set as input, so "taxpayer name" comes
-back as that label rather than a generic PERSON. Shape heuristics catch ALL-CAPS
-and surname-first names. Field grouping ties values to their labels. GLiNER also
-runs three deliberately non-PII labels (money, form number, job title) whose hits
-veto competing detections.
-
-A currency amount is dropped as a candidate regardless of what any layer says -
-the model has been seen labelling "$85,000" a date of birth, and preserving
-financial facts is not negotiable.
-
-**Person-name recall also depends on `en_core_web_sm` plus shape heuristics.** The
+**Person-name recall depends on `en_core_web_sm` plus shape heuristics.** The
 small spaCy model is poor on form-like text, so ALL-CAPS names, lone surnames
 and surname-first names are caught by shape rules instead. `en_core_web_lg` is
 a drop-in improvement at the cost of installer size.

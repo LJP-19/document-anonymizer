@@ -39,8 +39,6 @@ class TransformationPlan:
     group_membership: dict[str, list[str]] = field(default_factory=dict)
     group_value_texts: dict[str, list[str]] = field(default_factory=dict)
     ocr_required_pages: list[int] = field(default_factory=list)
-    replacement_map: dict[str, str] = field(default_factory=dict)
-    hidden_items: list = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -104,7 +102,6 @@ def build_plan(
             state=state,
         )
         plan.targets.append(target)
-        plan.replacement_map[candidate.normalized] = replacement
         if candidate.group_id:
             plan.group_membership.setdefault(candidate.group_id, []).append(candidate.id)
 

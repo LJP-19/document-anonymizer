@@ -6,7 +6,6 @@ pipeline (spec sections 33 and 47).
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -15,18 +14,9 @@ from .decisions.manager import DecisionManager, DecisionState
 from .detection.engine import analyse
 from .detection.types import Candidate, DetectionResult, PiiType
 from .document.model import Document
-from .document.hidden import HiddenContent, extract_hidden
 from .document.provider import DocumentTextProvider, default_provider
 from .entities.registry import EntityRegistry
-from .entities.roster import ClientRoster, mapping_path_for, write_mapping_workbook
-from .export.redactor import (
-    ApplyReport,
-    export,
-    render_original,
-    render_originals,
-    render_page,
-    render_pages,
-)
+from .export.redactor import ApplyReport, export, render_original, render_page
 from .transform.plan import TransformationPlan, build_plan
 from .verification.verifier import VerificationReport, verify
 
@@ -55,39 +45,13 @@ class AnonymizationSession:
     registry: Optional[EntityRegistry] = None
     status: str = Status.IDLE
     batch_scope: Optional[str] = None
-    roster: Optional[ClientRoster] = None
-    roster_path: Optional[str] = None
-    mapping_file: Optional[str] = None
-    hidden: Optional[HiddenContent] = None
-    mapping_folder: Optional[str] = None
 
-    def analyse(self, use_ner: bool = True, use_llm: Optional[bool] = None) -> DetectionResult:
-        import os
-
-        if use_llm is None:
-            # The audit pass costs ~30-60s per uncertain page. Off by default in
-            # tests and any environment that opts out.
-            use_llm = os.environ.get("DOCANON_LLM", "1") not in ("0", "false", "no")
+    def analyse(self, use_ner: bool = True) -> DetectionResult:
         self.status = Status.ANALYZING
         self.document = self.provider.load(self.source_path)
-        # Metadata, annotations, attachments and bookmarks carry identity that
-        # page redaction never touches (spec section 42).
-        self.hidden = extract_hidden(self.source_path)
-        self.detection = analyse(self.document, use_ner=use_ner, use_llm=use_llm)
-        if self.hidden:
-            self.detection.warnings.append(
-                f"{len(self.hidden.items)} item(s) of hidden content found "
-                "(document properties, annotations, attachments or bookmarks); "
-                "these are stripped or rewritten on export"
-            )
+        self.detection = analyse(self.document, use_ner=use_ner)
         self.decisions.register(self.detection.candidates)
-        if self.roster is None and self.roster_path:
-            self.roster = ClientRoster.load(Path(self.roster_path))
-        self.registry = EntityRegistry(
-            scope=self.batch_scope or Path(self.source_path).name,
-            roster=self.roster,
-            document_name=Path(self.source_path).name,
-        )
+        self.registry = EntityRegistry(scope=self.batch_scope or Path(self.source_path).name)
         self.status = self._derive_status()
         return self.detection
 
@@ -106,16 +70,13 @@ class AnonymizationSession:
     def plan(self) -> TransformationPlan:
         if self.detection is None or self.registry is None:
             raise RuntimeError("analyse() must run before a plan can be built")
-        plan = build_plan(
+        return build_plan(
             self.source_path,
             self.detection,
             self.decisions,
             self.registry,
             ocr_required_pages=self.document.ocr_required_pages if self.document else [],
         )
-        if self.hidden:
-            plan.hidden_items = list(self.hidden.items)
-        return plan
 
     # -- preview -----------------------------------------------------------
 
@@ -124,48 +85,6 @@ class AnonymizationSession:
 
     def preview_transformed(self, page_no: int, zoom: float = 1.5) -> bytes:
         return render_page(self.plan(), page_no, zoom)
-
-    def preview_originals(self, pages: list[int], zoom: float = 1.0) -> dict[int, bytes]:
-        return render_originals(self.source_path, pages, zoom)
-
-    def preview_transformed_pages(self, pages: list[int], zoom: float = 1.0) -> dict[int, bytes]:
-        return render_pages(self.plan(), pages, zoom)
-
-    def safe_output_name(self) -> str:
-        """A filename that does not itself leak the client (spec section 3).
-
-        "Smith John 2025 1040.pdf" would undo the whole exercise the moment the
-        file is emailed, so any detected value appearing in the name is replaced
-        with the same pseudonym used inside the document.
-        """
-        from pathlib import Path as _Path
-
-        stem = _Path(self.source_path).stem
-        if not self.detection or not self.registry:
-            return f"{stem}.anonymized.pdf"
-
-        replacements: list[tuple[str, str]] = []
-        for candidate in self.detection.candidates:
-            if not self.decisions.is_actionable(candidate):
-                continue
-            original = candidate.normalized
-            if len(original) < 3:
-                continue
-            replacements.append(
-                (original, self.registry.pseudonym_for(candidate.pii_type, original))
-            )
-            # Individual words of a name appear in filenames far more often than
-            # the full string does.
-            for token in original.split():
-                if len(token) >= 3 and token.isalpha():
-                    replacements.append((token, ""))
-
-        safe = stem
-        for original, pseudonym in sorted(replacements, key=lambda r: -len(r[0])):
-            pattern = re.compile(rf"(?<![A-Za-z0-9]){re.escape(original)}(?![A-Za-z0-9])", re.I)
-            safe = pattern.sub(pseudonym or "REDACTED", safe)
-        safe = re.sub(r"[_\s-]{2,}", "-", safe).strip("-_ ") or "document"
-        return f"{safe}.anonymized.pdf"
 
     # -- export + verify ---------------------------------------------------
 
@@ -179,43 +98,10 @@ class AnonymizationSession:
             raise
         self.status = Status.VERIFYING
         report = verify(plan, output_path)
-        self.mapping_file = self.write_mapping(output_path)
         self.status = Status.VERIFIED if report.passed else Status.VERIFICATION_FAILED
         if self.document and self.document.ocr_required_pages:
             self.status = Status.VERIFICATION_FAILED if not report.passed else Status.PARTIALLY_ANALYZED
         return apply_report, report
-
-    def write_mapping(self, output_path: str) -> Optional[str]:
-        """Write the pseudonym-to-original workbook, and persist the roster."""
-        if self.registry is None:
-            return None
-        from .entities.roster import ROSTER_TYPES, RosterEntry
-
-        entries = [
-            RosterEntry(
-                pii_type=record.key.pii_type,
-                original=record.original,
-                pseudonym=record.pseudonym,
-                first_seen_in=Path(self.source_path).name,
-            )
-            for record in self.registry.records
-            if record.key.pii_type in ROSTER_TYPES
-        ]
-        if not entries:
-            return None
-        path = mapping_path_for(
-            Path(output_path), Path(self.mapping_folder) if self.mapping_folder else None
-        )
-        try:
-            write_mapping_workbook(sorted(entries, key=lambda e: (e.pii_type.value, e.original)), path)
-        except Exception:
-            return None
-        if self.roster is not None and self.roster_path:
-            try:
-                self.roster.save(Path(self.roster_path))
-            except Exception:
-                pass
-        return str(path)
 
     # -- review helpers ----------------------------------------------------
 

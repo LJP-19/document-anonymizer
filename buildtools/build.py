@@ -27,10 +27,6 @@ SPACY_MODEL = "en_core_web_sm"
 # Packages that PyInstaller cannot discover by static analysis because spaCy
 # resolves them through entry points and catalogue registries at runtime.
 COLLECT_ALL = [
-    "onnxruntime",
-    "tokenizers",
-    "llama_cpp",
-    "openpyxl",
     SPACY_MODEL,
     "spacy",
     "spacy_legacy",
@@ -83,10 +79,6 @@ def build(clean: bool = True) -> Path:
         str(ROOT / "build"),
         "--add-data",
         _data_arg(ROOT / "resources" / "rules", "resources/rules"),
-        "--add-data",
-        _data_arg(ROOT / "resources" / "models", "resources/models"),
-        "--add-data",
-        _data_arg(ROOT / "resources" / "icons", "resources/icons"),
     ]
     for pkg in COLLECT_ALL:
         if importlib.util.find_spec(pkg) is None:
@@ -96,9 +88,6 @@ def build(clean: bool = True) -> Path:
         cmd += ["--collect-all", pkg]
     for mod in HIDDEN_IMPORTS:
         cmd += ["--hidden-import", mod]
-    icon = ROOT / "resources" / "icons" / ("app.ico" if os.name == "nt" else "app.icns")
-    if icon.exists():
-        cmd += ["--icon", str(icon)]
     if sys.platform == "darwin":
         cmd += ["--osx-bundle-identifier", "solutions.turnkeyfinancial.docanonymizer"]
     cmd.append(str(ROOT / "main.py"))
@@ -141,12 +130,6 @@ def rename_windows_exe(dist: Path) -> Path:
 
 def verify_model_is_bundled() -> None:
     """Fail the build rather than ship an app that would need the network."""
-    gliner = ROOT / "resources" / "models" / "gliner-pii" / "onnx" / "model_quint8.onnx"
-    if not gliner.exists():
-        raise SystemExit(
-            "GLiNER weights are missing. Run: python buildtools/fetch_models.py\n"
-            "The packaged app must never download them at runtime (spec section 67)."
-        )
     if importlib.util.find_spec(SPACY_MODEL) is None:
         raise SystemExit(
             f"{SPACY_MODEL} is not installed in the build environment. "

@@ -17,7 +17,6 @@ from typing import Optional
 
 import pymupdf
 
-from ..document.hidden import sanitize_hidden
 from ..transform.plan import TransformationPlan, Target
 
 log = logging.getLogger(__name__)
@@ -30,14 +29,12 @@ RECT_PAD = 0.6
 class ApplyReport:
     redacted: int = 0
     inserted: int = 0
-    hidden_actions: list = None
     shrunk: list[str] = None  # candidate ids whose font had to be reduced
     overflowed: list[str] = None  # candidate ids that could not be fitted
 
     def __post_init__(self):
         self.shrunk = self.shrunk or []
         self.overflowed = self.overflowed or []
-        self.hidden_actions = self.hidden_actions or []
 
 
 def apply_plan(plan: TransformationPlan, doc: Optional[pymupdf.Document] = None) -> tuple[pymupdf.Document, ApplyReport]:
@@ -73,9 +70,6 @@ def apply_plan(plan: TransformationPlan, doc: Optional[pymupdf.Document] = None)
                     report.overflowed.append(t.candidate_id)
                 if status != "failed":
                     report.inserted += 1
-        # Hidden content has no page geometry, so it is rewritten or removed
-        # rather than redacted in place.
-        report.hidden_actions = sanitize_hidden(pdf, plan.replacement_map)
     except Exception:
         if own:
             pdf.close()
@@ -188,32 +182,6 @@ def render_page(plan: TransformationPlan, page_no: int, zoom: float = 1.5) -> by
     try:
         pix = pdf[page_no].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
         return pix.tobytes("png")
-    finally:
-        pdf.close()
-
-
-def render_pages(plan: TransformationPlan, pages: list[int], zoom: float = 1.0) -> dict[int, bytes]:
-    """Render several transformed pages from a single application of the plan."""
-    pdf, _ = apply_plan(plan)
-    try:
-        out: dict[int, bytes] = {}
-        for page_no in pages:
-            if 0 <= page_no < pdf.page_count:
-                pix = pdf[page_no].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
-                out[page_no] = pix.tobytes("png")
-        return out
-    finally:
-        pdf.close()
-
-
-def render_originals(path: str, pages: list[int], zoom: float = 1.0) -> dict[int, bytes]:
-    pdf = pymupdf.open(path)
-    try:
-        return {
-            page_no: pdf[page_no].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).tobytes("png")
-            for page_no in pages
-            if 0 <= page_no < pdf.page_count
-        }
     finally:
         pdf.close()
 
