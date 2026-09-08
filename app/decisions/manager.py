@@ -52,6 +52,7 @@ class OccurrenceGroup:
 @dataclass
 class DecisionManager:
     decisions: dict[str, Decision] = field(default_factory=dict)
+    reviewed: set[str] = field(default_factory=set)
     _undo: list[list[tuple[str, Decision]]] = field(default_factory=list)
     on_change: Optional[Callable[[], None]] = None
 
@@ -149,6 +150,18 @@ class DecisionManager:
             candidate_id=candidate.id, state=DecisionState.MANUALLY_ADDED
         )
         self._notify()
+
+    def mark_reviewed(self, candidates: list[Candidate], value: bool = True) -> None:
+        """Confirm an item has been looked at, without changing its fate."""
+        for c in candidates:
+            if value:
+                self.reviewed.add(c.id)
+            else:
+                self.reviewed.discard(c.id)
+        self._notify()
+
+    def is_reviewed(self, candidate: Candidate) -> bool:
+        return candidate.id in self.reviewed
 
     def undo(self) -> bool:
         if not self._undo:

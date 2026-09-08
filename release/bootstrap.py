@@ -18,7 +18,10 @@ MODEL_WHEEL = (
     "https://github.com/explosion/spacy-models/releases/download/"
     "en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 )
-REQUIRED = ["pytest", "pymupdf", "spacy", "faker", "yaml", "reportlab", "PySide6"]
+REQUIRED = [
+    "pytest", "pymupdf", "spacy", "faker", "yaml", "reportlab", "PySide6",
+    "onnxruntime", "transformers", "huggingface_hub",
+]
 
 #: Versions the pinned dependencies actually ship wheels for. Outside this range
 #: pip tries to compile spaCy and PySide6 from source and fails.
@@ -76,6 +79,19 @@ def ensure(quiet: bool = False) -> bool:
                 f"    {sys.executable} -m pip install {MODEL_WHEEL}"
             )
             return False
+
+    gliner = ROOT / "resources" / "models" / "gliner-pii" / "onnx" / "model_quint8.onnx"
+    if not gliner.exists():
+        if not quiet:
+            print("  fetching the local PII model (~50 MB, once)")
+        try:
+            sys.path.insert(0, str(ROOT / "buildtools"))
+            import fetch_models
+
+            fetch_models.fetch_gliner()
+        except Exception as exc:  # noqa: BLE001 - detection degrades, does not fail
+            print(f"  could not fetch the PII model ({type(exc).__name__}); "
+                  "detection will run without it")
 
     return not _missing() and importlib.util.find_spec(MODEL) is not None
 

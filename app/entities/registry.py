@@ -44,6 +44,8 @@ class EntityRecord:
 @dataclass
 class EntityRegistry:
     scope: str = "document"
+    roster: object = None  # ClientRoster, injected; keeps names stable across files
+    document_name: str = ""
     _records: dict[EntityKey, EntityRecord] = field(default_factory=dict)
     _taken: set[str] = field(default_factory=set)
 
@@ -63,6 +65,17 @@ class EntityRegistry:
             record.occurrences += 1
             return record.pseudonym
 
+        # A client already seen in another document keeps the same pseudonym,
+        # so a batch reads coherently to whoever analyses it.
+        if self.roster is not None:
+            carried = self.roster.pseudonym_for(pii_type, text)
+            if carried:
+                self._records[key] = EntityRecord(
+                    key=key, original=text, pseudonym=carried, occurrences=1
+                )
+                self._taken.add(carried.lower())
+                return carried
+
         pseudonym = generate(pii_type, text, scope=f"{self.scope}|{discriminator}")
         salt = 0
         while pseudonym.lower() in self._taken or _shares_token(text, pseudonym):
@@ -73,6 +86,8 @@ class EntityRegistry:
         record = EntityRecord(key=key, original=text, pseudonym=pseudonym, occurrences=1)
         self._records[key] = record
         self._taken.add(pseudonym.lower())
+        if self.roster is not None:
+            self.roster.record(pii_type, text, pseudonym, self.document_name)
         return pseudonym
 
     def override(self, pii_type: PiiType, text: str, pseudonym: str, discriminator: str = "") -> None:
@@ -87,6 +102,8 @@ class EntityRegistry:
                 key=key, original=text, pseudonym=pseudonym, user_edited=True
             )
         self._taken.add(pseudonym.lower())
+        if self.roster is not None:
+            self.roster.record(pii_type, text, pseudonym, self.document_name)
 
     def lookup(self, pii_type: PiiType, text: str, discriminator: str = "") -> Optional[EntityRecord]:
         return self._records.get(self.key_for(pii_type, text, discriminator))

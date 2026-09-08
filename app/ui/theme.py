@@ -134,7 +134,7 @@ QPushButton#Chip {{
     background: transparent;
     border: 1px solid {BORDER};
     border-radius: 13px;
-    padding: 4px 14px;
+    padding: 4px 9px;
     color: {TEXT_DIM};
     font-size: 12px;
     /* Constant weight: switching to bold on :checked resizes the button and

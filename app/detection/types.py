@@ -32,6 +32,11 @@ class PiiType(str, Enum):
     CITY_STATE = "CITY_STATE"
     POSTAL_CODE = "POSTAL_CODE"
     PO_BOX = "PO_BOX"
+    # Demographic identity
+    CITIZENSHIP = "CITIZENSHIP"
+    BIRTHPLACE = "BIRTHPLACE"
+    GENDER = "GENDER"
+    MARITAL_STATUS = "MARITAL_STATUS"
     # Dates
     DOB = "DOB"
     PERSONAL_DATE = "PERSONAL_DATE"
@@ -85,6 +90,7 @@ class Source(str, Enum):
     GROUP = "group"
     COVERAGE = "coverage"
     MANUAL = "manual"
+    AUDIT = "audit"
 
 
 @dataclass

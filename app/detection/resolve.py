@@ -26,7 +26,10 @@ def _compatible(a: PiiType, b: PiiType) -> bool:
 
 #: Higher rank wins an overlap. Group-level spans outrank token detections
 #: because they represent a complete logical value (spec section 23).
-SOURCE_RANK = {Source.MANUAL: 4, Source.GROUP: 3, Source.REGEX: 2, Source.NER: 1, Source.COVERAGE: 1}
+SOURCE_RANK = {
+    Source.MANUAL: 4, Source.GROUP: 3, Source.REGEX: 2,
+    Source.NER: 1, Source.COVERAGE: 1, Source.AUDIT: 1,
+}
 
 
 def strip_label_overlaps(candidates: list[Candidate], labels: list[LabelRegion]) -> list[Candidate]:

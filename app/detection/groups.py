@@ -32,7 +32,10 @@ from .types import (
 
 MAX_STACKED_LINES = 6
 FULL_COVERAGE_RATIO = 0.95
-LINE_GAP_FACTOR = 1.9          # multiples of line height before the group ends
+# Measured on real form layouts: lines within one field sit ~0.02 of line height
+# apart; the gap before the NEXT field is ~0.6. Anything above 0.45 swallows the
+# following label and its value into this group.
+LINE_GAP_FACTOR = 0.45
 LEFT_EDGE_TOLERANCE = 14.0     # points of allowed left-edge drift
 INLINE_MIN_GAP = -2.0
 
@@ -217,9 +220,16 @@ def _cover_span(
     rect = line.rect_for(start, end)
     if rect is None:
         return []
+    # The label already says what this field holds. Using it beats reporting
+    # UNLABELLED, which is what made the review list unreadable.
+    inferred = (
+        group.expected_types[0]
+        if len(group.expected_types) == 1
+        else PiiType.UNCLASSIFIED_GROUP_VALUE
+    )
     return [
         Candidate(
-            pii_type=PiiType.UNCLASSIFIED_GROUP_VALUE,
+            pii_type=inferred,
             text=line.text[start:end],
             page_no=line.page_no,
             rect=rect,
@@ -236,10 +246,12 @@ def _cover_span(
                 )
             ],
             group_id=group.group_id,
-            needs_review=True,
+            needs_review=inferred is PiiType.UNCLASSIFIED_GROUP_VALUE,
             review_reason=(
-                "value line belongs to a sensitive labelled field but no detector "
-                "classified it - review before accepting"
+                ""
+                if inferred is not PiiType.UNCLASSIFIED_GROUP_VALUE
+                else "value line belongs to a sensitive labelled field but no "
+                "detector classified it - review before accepting"
             ),
         )
     ]

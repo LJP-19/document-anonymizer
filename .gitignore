@@ -10,3 +10,4 @@ out/
 .DS_Store
 *.anonymized.pdf
 *.anon.pdf
+resources/models/

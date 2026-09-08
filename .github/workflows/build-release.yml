@@ -33,8 +33,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -r requirements-dev.txt --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
           pip install "${SPACY_MODEL_WHEEL}"
+          python buildtools/fetch_models.py
       - name: Run the regression suite
         env:
           QT_QPA_PLATFORM: offscreen
@@ -61,9 +62,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -r requirements-dev.txt --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
           pip install pyinstaller==6.11.1
           pip install "${env:SPACY_MODEL_WHEEL}"
+          python buildtools/fetch_models.py
       - name: Confirm the model is installed before packaging
         run: python -c "import spacy; spacy.load('en_core_web_sm'); print('model OK')"
       - name: Run the regression suite on this runner
@@ -114,9 +116,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -r requirements-dev.txt --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
           pip install pyinstaller==6.11.1
           pip install "$SPACY_MODEL_WHEEL"
+          python buildtools/fetch_models.py
       - name: Confirm the model is installed before packaging
         run: python -c "import spacy; spacy.load('en_core_web_sm'); print('model OK')"
       - name: Run the regression suite on this runner

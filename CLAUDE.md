@@ -33,6 +33,40 @@ what the app now needs. Say which files you actually changed.
 10. **No network at runtime.** Models and rules are bundled. GitHub is for
     source control and CI only.
 
+## Detection layers
+
+Rules -> GLiNER -> shape heuristics -> field groups -> resolution -> compound
+split -> subject identification -> propagation -> value widening -> coverage.
+
+`LINE_GAP_FACTOR` in groups.py is measured, not guessed: within a field, lines
+sit ~0.02 of line height apart; the gap before the next field is ~0.6. Do not
+raise it above 0.45 without re-measuring.
+
+Edits to constants must be verified by reading the file back. A failed
+string-replace is silent and looks exactly like a fix that did not work.
+
+## Detection layers (detail)
+
+Rules -> GLiNER -> shape heuristics -> field groups -> coverage -> resolution.
+Never delete a layer to fix a bug in another. GLiNER is label-conditioned: add a
+label to `LABELS` in `app/detection/gliner.py` rather than writing a regex for an
+entity a model can name. Its non-PII labels are veto evidence, not detections.
+
+A currency or percentage token is never a candidate, whatever the model says.
+
+## Hidden content
+
+Page text is not the whole document. Metadata, annotations, attachments and
+bookmarks carry identity and are stripped or rewritten in `app/document/hidden.py`.
+Verification checks the saved file for all four. Never add a code path that
+writes a PDF without going through `sanitize_hidden`.
+
+## Offline
+
+`tests/test_offline.py` blocks every socket and runs the full pipeline. If a
+change makes any layer reach the network, that suite fails. Do not skip it, and
+do not remove the environment pins in `app/__init__.py`.
+
 ## Bug protocol
 
 Reproduce, find the layer that is actually wrong, fix it there, add a regression
@@ -52,6 +86,15 @@ Bugs already fixed and locked behind tests — do not reintroduce them:
 - spaCy tagging single capitalised form words ("Daytime") as PERSON
 - 8-digit hex alpha in a Qt stylesheet (Qt needs `rgba()`)
 - a render landing on a canvas the window has already destroyed
+- clearing the cancel flag on entry to process_approved, losing a cancel that
+  arrived first
+- restarting a fade animation over a running one, leaving a panel dimmed
+- moving an existing git tag instead of creating a new one, so every release
+  overwrote v0.2.0
+- a merge keeping old versions of edited files beside brand-new ones, so the
+  tree imported file-by-file but not together
+- GLiNER labelling "$85,000" a date of birth
+- a field value redacted in fragments because one detector's span stopped short
 
 ## UI rules
 

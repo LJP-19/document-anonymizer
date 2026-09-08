@@ -40,12 +40,24 @@ FORM_VOCABULARY = {
     "states", "america",
 }
 
-ALL_CAPS_NAME = re.compile(r"^[A-Z][A-Z'\-]+(?:\s+[A-Z][A-Z'\-.]*){1,3}$")
+SUFFIX = r"(?:\s+(?:Jr|Sr|II|III|IV|MD|CPA|Esq|PhD|DDS)\.?)?"
+TITLE = r"(?:(?:Mr|Mrs|Ms|Dr|Rev|Prof)\.?\s+)?"
+ALL_CAPS_NAME = re.compile(
+    r"^[A-Z][A-Z'\-]+(?:\s+[A-Z][A-Z'\-.]*){1,3}(?:\s+(?:JR|SR|II|III|IV|MD|CPA|ESQ)\.?)?$"
+)
 # A lone all-caps token: a surname in its own column. Weaker on its own, so it
 # is only trusted inside a group whose label expects a person.
 SINGLE_CAPS_TOKEN = re.compile(r"^[A-Z][A-Z'\-]{2,}$")
-SURNAME_FIRST = re.compile(r"^[A-Z][a-zA-Z'\-]+,\s+[A-Z][a-zA-Z'\-]+(?:\s+[A-Z][a-zA-Z'\-.]*)?$")
-TITLE_CASE_NAME = re.compile(r"^[A-Z][a-z'\-]+(?:\s+[A-Z][a-z'\-.]*){1,3}$")
+SURNAME_FIRST = re.compile(
+    r"^[A-Z][a-zA-Z'\-]+,\s+[A-Z][a-zA-Z'\-]+(?:\s+[A-Z][a-zA-Z'\-.]*)?" + SUFFIX + r"$"
+)
+TITLE_CASE_NAME = re.compile(
+    "^" + TITLE + r"[A-Z][a-z'\-]+(?:\s+[A-Z][a-z'\-.]*){1,3}" + SUFFIX + r"$"
+)
+# A mixed all-caps surname with a title-case given name, plus optional suffix.
+MIXED_CASE_NAME = re.compile(
+    "^" + TITLE + r"[A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-.]*){1,3}" + SUFFIX + r"$"
+)
 
 
 def _is_form_vocabulary(text: str) -> bool:
@@ -72,6 +84,8 @@ def looks_like_person(text: str) -> tuple[bool, float]:
         return True, 0.75
     if TITLE_CASE_NAME.match(stripped):
         return True, 0.62
+    if MIXED_CASE_NAME.match(stripped):
+        return True, 0.58
     return False, 0.0
 
 
