@@ -1,0 +1,12 @@
+# Optional: the local LLM audit pass.
+#
+# Kept out of requirements.txt on purpose. The wheel is ~18 MB, platform
+# specific, and has been served corrupt from the CPU index (BadZipFile: Bad
+# CRC-32 on libggml-base). Without it the auditor reports itself disabled and
+# every other detection layer runs normally, so a bad wheel costs a feature
+# rather than the whole build.
+#
+# Install with:
+#   pip install -r requirements-llm.txt \
+#     --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+llama-cpp-python>=0.3.16
