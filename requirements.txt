@@ -1,0 +1,28 @@
+# Pinned for reproducible CI builds (spec section 73).
+pymupdf==1.28.2
+PySide6==6.9.1
+spacy==3.8.16
+# en_core_web_trf is the ONLY spaCy English model this project ships in the
+# production build - not sm, not lg. Requires a torch CPU runtime and
+# spacy-transformers; both are required dependencies now, not optional.
+# The model itself is installed from a pinned wheel URL in CI and in
+# buildtools/fetch_models.py; it is bundled into the package, never
+# downloaded at runtime. Real, measured installed cost of this choice:
+# roughly 1.8 GB (torch CPU wheel + spacy-transformers + the model), on top
+# of everything else this application bundles - accepted deliberately.
+spacy-transformers==1.4.0
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.0
+Faker==37.1.0
+PyYAML==6.0.2
+onnxruntime==1.24.4
+# transformers itself is NOT pinned here on purpose. Nothing in this
+# codebase imports it directly - it was a leftover exact pin from an earlier,
+# since-removed LLM/audit code path (confirmed by grep: zero imports of
+# `transformers` anywhere under app/). spacy-transformers==1.4.0 (the latest
+# release, checked directly) has a hard ceiling of transformers<4.53.3; the
+# old transformers==4.57.6 pin conflicted with that ceiling and broke a
+# fresh CI resolve outright (ResolutionImpossible). Let spacy-transformers
+# pull in whatever compatible transformers version it needs.
+huggingface_hub==0.36.0
+openpyxl==3.1.5
