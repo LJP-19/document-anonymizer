@@ -1,0 +1,11 @@
+# Optional: the Presidio proposal layer (app/detection/presidio_adapter.py).
+#
+# Kept out of requirements.txt on purpose, matching the LLM's optional
+# pattern in requirements-llm.txt. Absent runtime means this layer reports
+# itself disabled and every other detection layer runs normally - Presidio
+# only PROPOSES spans; it is never the sole source of a detection.
+#
+# Uses the SAME en_core_web_sm the rest of the app already loads for
+# detect_ner - never en_core_web_lg. Install with:
+#   pip install -r requirements-presidio.txt
+presidio-analyzer>=2.2
