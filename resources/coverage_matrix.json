@@ -1,0 +1,470 @@
+{
+  "gap_count": 0,
+  "gaps": [],
+  "total_types": 47,
+  "types": {
+    "ACCOUNT_ID": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [
+        "(account|acct)[\\s.]*(number|no\\.?|#|id)"
+      ],
+      "presidio": false,
+      "regex_rules": []
+    },
+    "ADDRESS": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [
+        "name[, ]+address[, ]*(and)?[ ]*(zip|post",
+        "name[, ]+(and )?address",
+        "(mailing |home |business |street |reside",
+        "(city|town)[, ]*(state)?[, ]*(zip|postal"
+      ],
+      "presidio": true,
+      "regex_rules": [
+        "city_state_zip"
+      ]
+    },
+    "BANK_ACCOUNT": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [
+        "(bank|checking|savings|brokerage|investm"
+      ],
+      "presidio": true,
+      "regex_rules": [
+        "bank_account"
+      ]
+    },
+    "BIRTHPLACE": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [
+        "(place|city|country) of birth|birthplace"
+      ],
+      "presidio": false,
+      "regex_rules": []
+    },
+    "CARD_NUMBER": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": true,
+      "regex_rules": [
+        "card_number"
+      ]
+    },
+    "CASE_NUMBER": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [
+        "(case|docket|matter|file)( number| no\\.?"
+      ],
+      "presidio": false,
+      "regex_rules": [
+        "case_number"
+      ]
+    },
+    "CITIZENSHIP": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [
+        "((country|countries) of )?(citizenship|n"
+      ],
+      "presidio": true,
+      "regex_rules": []
+    },
+    "CITY_STATE": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": false,
+      "regex_rules": []
+    },
+    "CLAIM_NUMBER": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": false,
+      "regex_rules": [
+        "claim_number"
+      ]
+    },
+    "CUSTOMER_ID": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": false,
+      "regex_rules": [
+        "customer_id"
+      ]
+    },
+    "DOB": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [
+        "(date of birth|birth date|dob|d\\.o\\.b\\.?"
+      ],
+      "presidio": false,
+      "regex_rules": [
+        "dob"
+      ]
+    },
+    "DRIVERS_LICENSE": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [
+        "(driver.?s? licen[cs]e|state id)( number"
+      ],
+      "presidio": true,
+      "regex_rules": [
+        "drivers_license"
+      ]
+    },
+    "EIN": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [
+        "(ein|employer identification( number| no"
+      ],
+      "presidio": false,
+      "regex_rules": [
+        "ein",
+        "ein_spaced"
+      ]
+    },
+    "EMAIL": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [
+        "(e-?mail( address)?)"
+      ],
+      "presidio": true,
+      "regex_rules": [
+        "email"
+      ]
+    },
+    "EMPLOYEE_ID": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [
+        "(employee|personnel|payroll|badge) (id|n"
+      ],
+      "presidio": false,
+      "regex_rules": [
+        "employee_id"
+      ]
+    },
+    "FAX": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": false,
+      "regex_rules": [
+        "fax_number"
+      ]
+    },
+    "GENDER": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [
+        "(sex|gender)"
+      ],
+      "presidio": false,
+      "regex_rules": []
+    },
+    "IBAN": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": true,
+      "regex_rules": [
+        "iban"
+      ]
+    },
+    "IP_ADDRESS": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": false,
+      "regex_rules": [
+        "ipv4"
+      ]
+    },
+    "IP_PIN": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": false,
+      "regex_rules": [
+        "ip_pin"
+      ]
+    },
+    "ITIN": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [
+        "(itin|individual taxpayer identification"
+      ],
+      "presidio": true,
+      "regex_rules": [
+        "itin"
+      ]
+    },
+    "MAC_ADDRESS": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": false,
+      "regex_rules": [
+        "mac"
+      ]
+    },
+    "MARITAL_STATUS": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [
+        "(marital status|filing status)"
+      ],
+      "presidio": false,
+      "regex_rules": []
+    },
+    "MATTER_ID": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [
+        "(matter|docket|case file)[\\s.]*(number|n"
+      ],
+      "presidio": false,
+      "regex_rules": []
+    },
+    "MEDICARE_ID": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [
+        "(medicare( beneficiary)?( id| number)?|m"
+      ],
+      "presidio": false,
+      "regex_rules": [
+        "medicare_mbi"
+      ]
+    },
+    "MEMBER_ID": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [
+        "(member|subscriber|patient) id"
+      ],
+      "presidio": false,
+      "regex_rules": [
+        "member_id"
+      ]
+    },
+    "MRN": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": false,
+      "regex_rules": [
+        "mrn"
+      ]
+    },
+    "ORG_PRIVATE": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [
+        "((business|company|entity|trade|dba|doin",
+        "(name of (business|company|entity|employ"
+      ],
+      "presidio": false,
+      "regex_rules": []
+    },
+    "PASSPORT": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [
+        "passport( number| no\\.?| #)?"
+      ],
+      "presidio": true,
+      "regex_rules": [
+        "passport"
+      ]
+    },
+    "PAYROLL_ID": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [
+        "(payroll|badge)[\\s.]*(number|no\\.?|#|id)"
+      ],
+      "presidio": false,
+      "regex_rules": []
+    },
+    "PERSON": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [
+        "name[, ]+address[, ]*(and)?[ ]*(zip|post",
+        "name[, ]+(and )?address",
+        "(responsible party|authorized signer|man",
+        "(taxpayer|spouse|employee|client|custome"
+      ],
+      "presidio": true,
+      "regex_rules": []
+    },
+    "PERSONAL_DATE": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": true,
+      "regex_rules": []
+    },
+    "PHONE": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [
+        "(phone|telephone|mobile|cell|fax)( numbe"
+      ],
+      "presidio": true,
+      "regex_rules": [
+        "phone_us"
+      ]
+    },
+    "POLICY_NUMBER": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [
+        "(policy)( number| no\\.?| #)?"
+      ],
+      "presidio": false,
+      "regex_rules": [
+        "policy_number"
+      ]
+    },
+    "POSTAL_CODE": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [
+        "name[, ]+address[, ]*(and)?[ ]*(zip|post",
+        "(zip|postal)( code)?"
+      ],
+      "presidio": false,
+      "regex_rules": [
+        "us_zip"
+      ]
+    },
+    "PO_BOX": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": false,
+      "regex_rules": [
+        "po_box"
+      ]
+    },
+    "ROUTING_NUMBER": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [
+        "(routing( number| no\\.?| #)?|aba( number"
+      ],
+      "presidio": false,
+      "regex_rules": [
+        "routing_aba"
+      ]
+    },
+    "SOCIAL_HANDLE": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": false,
+      "regex_rules": [
+        "social_handle"
+      ]
+    },
+    "SSN": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [
+        "(ssn|social security( number| no\\.?| #)?"
+      ],
+      "presidio": true,
+      "regex_rules": [
+        "ssn_dashed",
+        "ssn_spaced",
+        "ssn_plain_unlabelled",
+        "ssn_plain"
+      ]
+    },
+    "STATE_TAX_ID": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [
+        "(state tax id|state (id|identification)("
+      ],
+      "presidio": false,
+      "regex_rules": []
+    },
+    "STREET": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": false,
+      "regex_rules": [
+        "street_address"
+      ]
+    },
+    "SWIFT_BIC": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": false,
+      "regex_rules": [
+        "swift_bic"
+      ]
+    },
+    "TIN": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [
+        "(tin|taxpayer (identification|id)( numbe"
+      ],
+      "presidio": false,
+      "regex_rules": []
+    },
+    "UNCLASSIFIED_GROUP_VALUE": {
+      "gliner": false,
+      "has_detector": false,
+      "label_patterns": [],
+      "presidio": false,
+      "regex_rules": []
+    },
+    "URL_PERSONAL": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [
+        "(personal (website|url|blog|page)|your ("
+      ],
+      "presidio": false,
+      "regex_rules": []
+    },
+    "USERNAME": {
+      "gliner": true,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": false,
+      "regex_rules": [
+        "username"
+      ]
+    },
+    "UUID": {
+      "gliner": false,
+      "has_detector": true,
+      "label_patterns": [],
+      "presidio": false,
+      "regex_rules": [
+        "uuid"
+      ]
+    }
+  }
+}
