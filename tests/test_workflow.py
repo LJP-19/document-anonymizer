@@ -1,0 +1,769 @@
+"""The build and the tests must not drift apart (spec sections 77 and 99)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import yaml
+
+WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "build-release.yml"
+
+
+def _workflow() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text())
+
+
+def test_every_platform_that_ships_a_build_runs_the_tests():
+    jobs = _workflow()["jobs"]
+    shipping = [
+        name
+        for name, cfg in jobs.items()
+        if any("upload-artifact" in str(step.get("uses", "")) for step in cfg["steps"])
+    ]
+    assert shipping, "no job uploads an installer"
+    for name in shipping:
+        steps = " ".join(str(step.get("run", "")) for step in jobs[name]["steps"])
+        assert "pytest" in steps, f"job '{name}' ships a build without running the tests"
+
+
+def test_builds_run_on_native_runners():
+    jobs = _workflow()["jobs"]
+    assert jobs["windows"]["runs-on"].startswith("windows")
+    assert jobs["macos"]["runs-on"].startswith("macos")
+
+
+def test_the_model_is_installed_before_packaging():
+    """A packaged app that downloads its model at runtime is not offline."""
+    for name in ("windows", "macos"):
+        steps = " ".join(str(s.get("run", "")) for s in _workflow()["jobs"][name]["steps"])
+        assert "en_core_web_trf" in steps
+
+
+def test_no_secrets_are_written_into_the_workflow():
+    text = WORKFLOW.read_text().lower()
+    for marker in ("ghp_", "github_pat_", "-----begin"):
+        assert marker not in text
+
+
+def test_dependency_installs_retry_and_never_cache():
+    """A corrupted wheel must not fail a release, or poison later runs.
+
+    A macOS build died on `BadZipFile: Bad CRC-32` from an 18 MB llama.cpp
+    wheel that arrived damaged. Without --no-cache-dir pip would keep replaying
+    the broken copy from cache on every subsequent run.
+    """
+    jobs = _workflow()["jobs"]
+    for name, config in jobs.items():
+        step = next(
+            (s for s in config["steps"] if s.get("name") == "Install dependencies"), None
+        )
+        assert step is not None, f"{name} has no dependency install step"
+        run = step["run"]
+        assert "--no-cache-dir" in run, f"{name} caches wheels"
+        assert "--retries" in run, f"{name} does not retry"
+        assert ("Install-Retry" in run) or ("for attempt in" in run), (
+            f"{name} has no retry loop around pip"
+        )
+
+
+def test_every_job_installs_the_audit_model():
+    """Reinstated, on explicit instruction, after a real, surfaced trade-off.
+
+    History (previously undiscovered until this pass, found via this same
+    test's own prior docstring): the LLM auditor was originally required in
+    every build, made optional after a corrupt wheel killed two macOS
+    builds (a reliability problem), then removed from shipped builds
+    entirely after it was found to propose labels, headings and figures as
+    often as real PII (a quality problem, more serious than the
+    reliability one - every false positive was a live risk of damaging a
+    real document if accepted). That history was surfaced explicitly
+    before this change, not silently overwritten: the user was told the
+    auditor's judgment quality has not been re-verified since the crash
+    fix and grammar-constrained output work (which fixed MECHANISM - the
+    adjudication pass running at all, producing valid JSON - not JUDGMENT
+    QUALITY, which is a different question this project has no way to
+    re-test without a real document), and confirmed proceeding anyway.
+    If quality problems resurface, this is the fourth swing on this exact
+    question and the history above is the place to look first.
+
+    Updated again: --with-llm no longer exists anywhere in this workflow.
+    No model is bundled or fetched at build time at all anymore - the
+    user chooses and downloads one themselves on first launch
+    (app/ui/model_picker.py). llama-cpp-python (the inference engine, not
+    any model's weights) is still always installed in every job, since
+    the app always needs it bundled regardless of which model gets
+    downloaded later.
+    """
+    for name, config in _workflow()["jobs"].items():
+        steps = " ".join(str(s.get("run", "")) for s in config["steps"])
+        assert "llama-cpp-python" in steps, f"{name} does not install the runtime"
+
+
+def test_the_llm_runtime_has_a_multi_version_fallback():
+    """Reactivated: this policy was proven correct by a SECOND real
+    failure of the exact same kind it predicted. Originally written after
+    a corrupt wheel killed two macOS builds when the LLM was required and
+    only one version was ever tried; made optional as a result (traded
+    away capability silently - the installer still built, but arrived on
+    other machines without the audit model). After the LLM was reinstated
+    as required in every build (see test_every_job_installs_the_audit_
+    model above), the SAME failure happened again on a real macOS build:
+    `zlib.error: Error -3 while decompressing data: invalid block type`
+    on llama_cpp_python-0.3.36, three attempts in a row, with `pip cache
+    purge` reporting 0 files removed each time - confirming the
+    corruption is server-side, not a local cache issue a purge could
+    fix. Retrying the SAME version was never going to work. Fixed the
+    same way this test originally called for: a dedicated "Install the
+    LLM runtime" step that falls through specific, previously-proven-good
+    versions (the open-ended latest, then 0.3.35, then 0.3.16) rather
+    than only retrying the one version that may itself be the broken
+    file, and that step must never silently tolerate failure.
+    """
+    for name, config in _workflow()["jobs"].items():
+        step = next(
+            (s for s in config["steps"] if "LLM runtime" in str(s.get("name", ""))), None
+        )
+        assert step is not None, f"{name} has no LLM runtime step"
+        assert step.get("continue-on-error") is not True, f"{name} tolerates a missing model"
+        assert "0.3.35" in step["run"] and "0.3.16" in step["run"], (
+            f"{name} does not try several wheel versions"
+        )
+
+
+def test_required_manifests_do_not_pin_the_llm_runtime():
+    root = WORKFLOW.parents[2]
+    for manifest in ("requirements.txt", "requirements-dev.txt"):
+        assert "llama-cpp" not in (root / manifest).read_text(), manifest
+    assert (root / "requirements-llm.txt").exists()
+
+
+def _superseded_test_shipped_builds_require_the_audit_model():
+    """An installer goes to machines with nothing installed.
+
+    Shipping one that quietly lacks the audit model makes it a different product
+    from the one that was tested here.
+    """
+    for name, config in _workflow()["jobs"].items():
+        step = next(
+            (s for s in config["steps"] if "LLM runtime" in str(s.get("name", ""))), None
+        )
+        assert step is not None, f"{name} has no LLM runtime step"
+        assert step.get("continue-on-error") is not True, (
+            f"{name} still tolerates a missing audit model"
+        )
+
+
+def test_the_build_refuses_to_publish_an_incomplete_bundle():
+    """The old "Refusing to build without the audit model" gate is gone -
+    it guarded a --with-llm flag that no longer exists, since no model is
+    ever bundled at build time at all anymore. What remains, and is still
+    checked here: the build still refuses to publish an incomplete bundle
+    for any OTHER reason (a missing GLiNER file, a missing spaCy model,
+    etc.) - that refusal was never specific to the LLM.
+    """
+    root = WORKFLOW.parents[2]
+    build = (root / "buildtools" / "build.py").read_text()
+    assert "Refusing to build without the audit model" not in build, (
+        "stale gate for a flag that no longer exists"
+    )
+    assert "not self-contained; refusing to publish it" in build
+
+    verify = (root / "buildtools" / "verify_bundle.py").read_text()
+    for required in ("gliner-pii", "llama_cpp", "en_core_web_trf", "PySide6", "onnxruntime"):
+        assert required in verify, f"the bundle check does not look for {required}"
+    assert "llm/*.gguf" not in verify, (
+        "no model weights are ever bundled anymore - this pattern should be gone"
+    )
+
+
+def test_bundle_check_reports_what_is_missing(tmp_path, monkeypatch):
+    import importlib.util
+
+    root = WORKFLOW.parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "verify_bundle", root / "buildtools" / "verify_bundle.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    empty = tmp_path / "dist" / "DocumentAnonymizer"
+    empty.mkdir(parents=True)
+    (empty / "placeholder.txt").write_text("x")
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+
+    problems = module.check()
+    assert any("GLiNER" in p for p in problems)
+    assert any("llama.cpp" in p for p in problems), (
+        "the engine is always required now, not conditional on a flag"
+    )
+    assert any("MB" in p for p in problems), "an undersized bundle should be flagged"
+
+
+def _superseded_test_models_are_fetched_after_the_runtime_is_installed():
+    """Regression: both builds refused to package, with no .gguf weights.
+
+    fetch_models.py ran inside "Install dependencies", before the LLM runtime
+    step, and skipped the Qwen download because llama_cpp was not importable
+    yet. Correct guard, wrong order.
+    """
+    for name, config in _workflow()["jobs"].items():
+        names = [str(s.get("name", "")) for s in config["steps"]]
+        assert "Fetch the bundled models" in names, f"{name} never fetches the models"
+        runtime = next(i for i, n in enumerate(names) if "LLM runtime" in n)
+        fetch = names.index("Fetch the bundled models")
+        assert fetch > runtime, f"{name} fetches models before installing the runtime"
+
+        for step in config["steps"]:
+            if str(step.get("name")) == "Install dependencies":
+                assert "fetch_models" not in step["run"], (
+                    f"{name} still fetches models during the dependency install"
+                )
+
+
+def test_the_fetcher_has_no_llm_model_logic_at_all():
+    """Previously checked that fetch_models.py's LLM-fetching function ran
+    unconditionally rather than gating on whether llama_cpp happened to
+    be installed yet. That whole function (fetch_llm) is gone now, not
+    just unconditional - no model is fetched or bundled at build time at
+    all anymore. What matters now: no trace of that old gating logic or
+    function remains, so a future edit cannot silently reintroduce the
+    original bug by partially restoring it."""
+    root = WORKFLOW.parents[2]
+    source = (root / "buildtools" / "fetch_models.py").read_text()
+    assert 'find_spec("llama_cpp")' not in source
+    assert "fetch_llm" not in source
+    assert "LLM_REPO" not in source
+    assert "LLM_FILE" not in source
+
+
+def _superseded_test_the_audit_model_runs_on_cpu_only():
+    """Regression: a macOS build appeared to hang probing Metal kernels.
+
+    The runner advertises a GPU it cannot use, so llama.cpp walked every kernel
+    printing "not supported" and loaded at a crawl.
+    """
+    root = WORKFLOW.parents[2]
+    source = (root / "app" / "detection" / "auditor.py").read_text()
+    assert "n_gpu_layers=0" in source
+    assert "GGML_METAL" in source
+
+
+def _superseded_test_ci_smoke_runs_do_not_invoke_the_model_per_page():
+    """It is exercised once, briefly, not across whole documents."""
+    for name, config in _workflow()["jobs"].items():
+        for step in config["steps"]:
+            if "End-to-end CLI run" in str(step.get("name", "")):
+                assert step.get("env", {}).get("DOCANON_LLM") == "0", (
+                    f"{name} runs the audit model over every page in a smoke test"
+                )
+        smoke = next(
+            (s for s in config["steps"] if "Smoke-test the audit model" in str(s.get("name", ""))),
+            None,
+        )
+        assert smoke is not None, f"{name} never proves the model loads"
+        assert smoke.get("timeout-minutes"), f"{name}'s model smoke test has no ceiling"
+
+
+def test_every_job_has_a_timeout():
+    """A stalled job must fail in minutes, not consume the six-hour limit."""
+    for name, config in _workflow()["jobs"].items():
+        assert config.get("timeout-minutes"), f"{name} has no timeout"
+
+
+def test_the_detection_model_is_still_fetched():
+    """GLiNER stays. It types values; it does not propose them."""
+    for name, config in _workflow()["jobs"].items():
+        steps = " ".join(str(s.get("run", "")) for s in config["steps"])
+        assert "fetch_models" in steps, f"{name} never fetches GLiNER"
+
+
+def test_the_audit_model_is_off_by_default():
+    root = WORKFLOW.parents[2]
+    session = (root / "app" / "session.py").read_text()
+    assert 'os.environ.get("DOCANON_LLM", "0")' in session
+    engine = (root / "app" / "detection" / "engine.py").read_text()
+    assert "use_llm: bool = False" in engine
+
+
+def test_build_py_has_no_llm_cli_flag_at_all():
+    """build.py previously had a --with-llm flag controlling whether
+    verify_bundle.check() required a bundled model - and, before that, a
+    --no-llm flag with the same purpose, inverted (see the removed test
+    this one replaces for that history). Both are gone now: no model is
+    bundled or fetched at build time at all anymore, so there is nothing
+    left for either flag to control. check() takes no require_llm
+    argument - verifying its real signature directly, not just that old
+    flag names are absent, since a renamed-but-still-present flag would
+    pass a weaker check."""
+    import inspect
+    import sys
+
+    root = WORKFLOW.parents[2]
+    sys.path.insert(0, str(root / "buildtools"))
+    import verify_bundle
+
+    source = (root / "buildtools" / "build.py").read_text()
+    assert "args.no_llm" not in source
+    assert "args.with_llm" not in source
+    assert '"--no-llm"' not in source
+    assert '"--with-llm"' not in source
+    assert "require_llm" not in inspect.signature(verify_bundle.check).parameters
+
+
+def test_llm_runtime_install_step_specifically_has_the_real_package():
+    """Inverse of test_every_job_installs_the_audit_model - checked at the
+    per-step level rather than the whole-job level, so the engine
+    install landing on the wrong step (e.g. a future step added after
+    the real one, that should not need it) would still be caught by
+    confirming the actual "Install the LLM runtime" step itself contains
+    it, not just that the string appears somewhere in the job.
+    """
+    for name, config in _workflow()["jobs"].items():
+        step = next(
+            (s for s in config["steps"] if "LLM runtime" in str(s.get("name", ""))),
+            None,
+        )
+        assert step is not None, f"{name} has no LLM runtime install step"
+        assert "llama-cpp-python" in str(step.get("run", "")), (
+            f"{name}'s LLM runtime step does not actually install the package"
+        )
+
+
+def test_verify_bundle_rejects_en_core_web_sm_if_present(tmp_path):
+    """en_core_web_trf is the only spaCy model this project ships. A bundle
+    containing sm or lg alongside it - not instead of it - must still fail,
+    since neither should ever be present at all."""
+    import importlib.util
+
+    root = WORKFLOW.parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "verify_bundle", root / "buildtools" / "verify_bundle.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    bundle = tmp_path / "dist" / "DocumentAnonymizer"
+    (bundle / "en_core_web_sm").mkdir(parents=True)
+    (bundle / "en_core_web_sm" / "junk").write_text("x")
+    (bundle / "en_core_web_trf").mkdir(parents=True)
+    (bundle / "en_core_web_trf" / "config.cfg").write_text("x")
+
+    module.ROOT = tmp_path
+    problems = module.check()
+    assert any("en_core_web_sm" in p for p in problems)
+
+
+def test_ci_workflow_fetches_trf_not_sm():
+    workflow = (WORKFLOW.parents[2] / ".github" / "workflows" / "build-release.yml").read_text()
+    assert "en_core_web_trf" in workflow
+    assert "en_core_web_sm" not in workflow
+
+
+def test_self_test_mode_exists_and_reports_failure_clearly(capsys):
+    """Real gap found while diagnosing a live crash: every CI smoke test ran
+    `python -m app.cli` - the runner's own, normal, unfrozen Python, with
+    each package's binaries properly isolated. That structurally cannot
+    catch a PyInstaller-freezing-specific bundling bug (two packages
+    vendoring conflicting copies of an overlapping shared library, merged
+    into one flat directory only when frozen) - which is exactly what
+    produced a real reported crash: `SystemError: <class 'ImportError'>
+    returned a result with an exception set`, in the packaged .exe only,
+    never in any CI smoke test. `--self-test` runs the same operation
+    (load en_core_web_trf, load GLiNER, run one analysis) inside whatever
+    process invokes it - unfrozen here, but the FROZEN executable when CI
+    or a person runs it directly - and must fail loudly, not silently.
+
+    Called in-process rather than via a fresh subprocess: a second, fully
+    separate interpreter reloading the whole torch/spacy/trf stack on top
+    of an already-heavy test run is real resource contention this sandbox
+    (a ~3.9 GB-RAM container) cannot always absorb, which is a fact about
+    THIS test's own footprint, not about the function it is testing. The
+    real frozen-executable invocation always runs as its own dedicated CI
+    step, never nested inside a long pytest run, so this does not weaken
+    what actually gets verified in CI.
+    """
+    from app import main as main_module
+
+    result_file = main_module._log_path().parent / "self-test-result.txt"
+    result_file.unlink(missing_ok=True)
+
+    exit_code = main_module._self_test()
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured.out + captured.err
+    # The real bug this whole feature exists to catch: a --windowed
+    # PyInstaller build has NO console attached, so print() output alone
+    # is not a reliable diagnostic - a real user ran this and got nothing
+    # back. The result must ALSO always land in a plain file, independent
+    # of whether console output worked at all.
+    assert result_file.exists(), "self-test must always write its result to a file"
+    assert "PASSED" in result_file.read_text()
+    assert "PASSED" in captured.out
+
+
+def test_ci_workflow_actually_executes_the_frozen_binary():
+    """The build step alone only proves PyInstaller did not error while
+    freezing - it says nothing about whether the frozen result actually
+    runs. Both platform jobs must invoke the real artifact with
+    --self-test, not just build it and upload it."""
+    workflow = (WORKFLOW.parents[2] / ".github" / "workflows" / "build-release.yml").read_text()
+    assert workflow.count("--self-test") >= 2, (
+        "expected a --self-test invocation on both the Windows .exe and "
+        "the macOS .app, after their respective build steps"
+    )
+    assert "DocumentAnonymizer.exe --self-test" in workflow
+    assert "DocumentAnonymizer.app/Contents/MacOS/DocumentAnonymizer --self-test" in workflow
+
+
+def test_self_test_writes_result_file_even_when_console_output_is_useless(capsys, monkeypatch):
+    """Reproduces the actual reported symptom: a user ran
+    `DocumentAnonymizer.exe --self-test` and got a blank response, because
+    --windowed PyInstaller builds have no console attached and print()
+    output goes nowhere. This must never leave the user with nothing to
+    look at, regardless of whether stdout is usable at all."""
+    from app import main as main_module
+
+    result_file = main_module._log_path().parent / "self-test-result.txt"
+    result_file.unlink(missing_ok=True)
+
+    def boom(*args, **kwargs):
+        raise SystemError("<class 'ImportError'> returned a result with an exception set")
+
+    monkeypatch.setattr("spacy.load", boom)
+    exit_code = main_module._self_test()
+    assert exit_code == 1
+    assert result_file.exists()
+    content = result_file.read_text()
+    assert "FAIL" in content
+    assert "SystemError" in content
+    assert "ImportError" in content
+
+
+def test_transformers_package_is_verified_but_not_via_collect_all():
+    """Real, reported crash on the FIRST actual CI run of --self-test on
+    macOS: FileNotFoundError on
+    Contents/Frameworks/transformers/models/__init__.pyc. spacy_transformers
+    depends on transformers, but PyInstaller bundling a package's traced
+    imports into the PYZ archive is not the same as preserving its loose
+    files on disk - transformers.models scans its own package directory
+    with os.listdir() at import time, a dynamic filesystem read no static
+    import-analysis catches. The self-test step added specifically to catch
+    frozen-build-only bugs caught exactly this, on its first real run.
+
+    The original fix (adding "transformers" to COLLECT_ALL) turned out to
+    be insufficient on real CI - transformers is now handled entirely by
+    its own dedicated hook (module_collection_mode='pyz+py'), not
+    --collect-all, so it must NOT be back in COLLECT_ALL - see
+    test_transformers_uses_module_collection_mode_not_collect_all for that
+    half of this. verify_bundle.py's file check stays regardless of which
+    mechanism bundles the package - it is checking the outcome, not the
+    method.
+    """
+    import buildtools.build as build_module
+    import buildtools.verify_bundle as verify_module
+
+    assert "transformers" not in build_module.COLLECT_ALL
+    required_globs = [glob for _, glob in verify_module.REQUIRED]
+    assert any("transformers/models/__init__" in g for g in required_globs), (
+        "verify_bundle.py must check for this file specifically - it is "
+        "the exact thing that was missing, and checking for it here catches "
+        "the defect immediately after packaging, before the more expensive "
+        "self-test step has to load the whole model to find out"
+    )
+
+
+def test_chardet_is_excluded_from_the_build():
+    """Real, reported crash: spacy/__init__.py unconditionally imports its
+    own cli/download subsystem (never used - the model ships bundled, never
+    downloaded at runtime), which pulls in requests, which optionally tries
+    chardet before falling back to charset_normalizer. That fallback only
+    catches plain ImportError - but chardet broke with the same SystemError
+    signature as the earlier numpy ABI issue when frozen, which escapes the
+    fallback entirely and broke `import spacy` itself. Verified directly:
+    with chardet genuinely unimportable, requests correctly falls through
+    to charset_normalizer and spacy imports cleanly end to end - excluding
+    chardet from the build reproduces exactly that working state.
+    """
+    import buildtools.build as build_module
+    import buildtools.verify_bundle as verify_module
+
+    assert "chardet" in build_module.EXCLUDE_MODULES
+    verify_source = open(verify_module.__file__).read()
+    assert "chardet" in verify_source and "**/chardet/**" in verify_source, (
+        "verify_bundle.py must reject chardet if it is ever present, "
+        "catching a regression if the build-time exclusion is removed"
+    )
+
+
+def test_transformers_hook_collects_py_files_as_loose_files():
+    """Real, reported crash on TWO separate real CI runs (Windows, then
+    macOS), even after transformers was added to COLLECT_ALL:
+    FileNotFoundError on Contents/Frameworks/transformers/models/__init__.pyc.
+    --collect-all does NOT, by itself, keep a package's .py/.pyc files as
+    loose files on disk - by PyInstaller's own documented default, those get
+    archived into the PYZ instead. transformers.models does its own
+    os.listdir() scan of its package directory at import time, which needs
+    real loose files. The fix is a dedicated hook using
+    collect_data_files(..., include_py_files=True) - verified directly here
+    against the real installed package, not just asserted.
+
+    PyInstaller is a build-time-only tool: it is deliberately not part of
+    requirements-dev.txt, since the general "run the test suite" CI job has
+    no reason to install a packaging tool it never invokes - only the
+    actual Windows/macOS build jobs need it, and they install it
+    separately as part of building. Skip cleanly rather than fail when it
+    is not present, exactly as it correctly is not in that job.
+
+    dest paths are platform-native (collect_data_files builds them via
+    str(pathlib.Path...), which is backslash-separated on Windows and
+    forward-slash on POSIX) - a real Windows CI run caught exactly this:
+    my first version of this assertion hardcoded a POSIX-style path and
+    could never have passed there regardless of whether the actual fix
+    works. Normalize separators explicitly before comparing, verified
+    directly against a simulated Windows-style path string before
+    trusting it, rather than guessing again.
+    """
+    pytest.importorskip("PyInstaller")
+    from PyInstaller.utils.hooks import collect_data_files
+
+    datas = collect_data_files("transformers", include_py_files=True)
+    assert any(
+        dest.replace("\\", "/") == "transformers/models" and src.endswith("__init__.py")
+        for src, dest in datas
+    ), "the exact file that was missing in the real crash must be collected"
+
+
+def test_build_wires_the_transformers_hook_and_ci_verifies_the_bundle():
+    """The hook file existing is not enough - build.py must actually load
+    it, and verify_bundle.py (which checks for exactly this file) must
+    actually run in CI. It existed but was never wired into the workflow -
+    it would have caught this regression days earlier than the self-test
+    did, for a fraction of the cost."""
+    import buildtools.build as build_module
+
+    hook_file = WORKFLOW.parents[2] / "buildtools" / "hooks" / "hook-transformers.py"
+    assert hook_file.exists()
+    build_source = open(build_module.__file__).read()
+    assert "--additional-hooks-dir" in build_source
+
+    workflow = WORKFLOW.read_text()
+    assert workflow.count("buildtools/verify_bundle.py") >= 2, (
+        "verify_bundle.py must run on both the Windows and macOS build jobs"
+    )
+
+
+def test_transformers_hook_check_is_platform_agnostic():
+    """The real Windows CI run that caught the previous version of this
+    assertion is not something this sandbox can reproduce directly - it
+    runs Linux. This tests the actual normalization logic in isolation
+    against a genuinely Windows-style path string, so the fix is verified
+    here rather than merely asserted to be correct."""
+    def matches(dest: str, src: str) -> bool:
+        return (
+            dest.replace("\\", "/") == "transformers/models"
+            and src.endswith("__init__.py")
+        )
+
+    assert matches("transformers\\models", "C:\\pkg\\transformers\\models\\__init__.py")
+    assert matches("transformers/models", "/pkg/transformers/models/__init__.py")
+    assert not matches("transformers\\other", "C:\\pkg\\transformers\\other\\__init__.py")
+
+
+def test_transformers_hook_copies_metadata_for_its_own_runtime_checks():
+    """Real, reported crash on a real macOS CI run, AFTER the include_py_
+    files fix resolved the earlier FileNotFoundError:
+    PackageNotFoundError: No package metadata was found for regex.
+    transformers checks its own runtime dependencies at import time by
+    reading installed-package METADATA (.dist-info) via
+    importlib.metadata.version() - a different thing from the package's
+    source files, which collect_data_files()/--collect-all do not bundle.
+
+    The hook does this dynamically now - reusing pyinstaller-hooks-contrib's
+    own technique of checking transformers' FULL dependency table and
+    copying metadata only for whatever is actually satisfied in the build
+    environment - rather than a hardcoded package list, so this test loads
+    and runs the real hook file and checks its actual output covers every
+    package transformers' own startup check needs, instead of grepping the
+    hook's source for literal names that no longer appear there.
+    """
+    pytest.importorskip("PyInstaller")
+    import importlib.util
+
+    import transformers.dependency_versions_check as check_module
+
+    hook_path = WORKFLOW.parents[2] / "buildtools" / "hooks" / "hook-transformers.py"
+    spec = importlib.util.spec_from_file_location("hook_transformers", hook_path)
+    hook_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook_module)
+
+    covered = {dest for src, dest in hook_module.datas if dest.endswith(".dist-info")}
+    covered_normalized = {c.lower().replace("_", "-") for c in covered}
+    for pkg in check_module.pkgs_to_check_at_runtime:
+        if pkg in ("python", "accelerate"):
+            continue  # not a real installed package / not installed by this project
+        pkg_normalized = pkg.lower().replace("_", "-")
+        assert any(pkg_normalized in c for c in covered_normalized), (
+            f"'{pkg}' is checked by transformers' own dependency_versions_check.py "
+            "at import time but the hook's actual output does not cover it"
+        )
+
+
+def test_transformers_uses_module_collection_mode_not_collect_all():
+    """Two prior attempts (COLLECT_ALL, then a custom hook using
+    collect_data_files(..., include_py_files=True)) both failed identically
+    on real Windows AND macOS CI runs - the exact same FileNotFoundError on
+    transformers/models/__init__.pyc, unchanged. pyinstaller-hooks-contrib
+    (a REQUIRED dependency of pyinstaller itself) already ships its own
+    hook for this exact package using a different, PyInstaller-native
+    mechanism - module_collection_mode - which a custom hook for the same
+    module name likely shadowed rather than supplemented (one hook applies
+    per module name, not a merge). "transformers" must not also appear in
+    COLLECT_ALL - --collect-all and a hook's own settings are two
+    different, potentially-conflicting paths to bundle the same package.
+
+    The mode itself moved from 'pyz+py' to 'py': 'pyz+py' reproduced the
+    IDENTICAL crash on a real macOS CI run, because it keeps the archived
+    (PYZ) flag set alongside the external-file (PY) one - PyInstaller's
+    own loader (pyimod02_importers.py) still imports the archived copy by
+    default and synthesizes a __file__ under sys._MEIPASS ending in .pyc
+    that need not correspond to a real file, regardless of whether an
+    external .py copy also exists elsewhere. 'py' alone removes the
+    archived alternative entirely, forcing the loader to use the real,
+    on-disk file - verified this reasoning directly against PyInstaller's
+    own loader source before changing it, not just tried another plausible
+    option.
+    """
+    pytest.importorskip("PyInstaller")
+    import importlib.util
+
+    import buildtools.build as build_module
+
+    assert "transformers" not in build_module.COLLECT_ALL, (
+        "transformers must be handled ONLY by its dedicated hook now, not "
+        "also by --collect-all - having both is an unexamined variable in "
+        "a problem that has already taken multiple real attempts"
+    )
+
+    hook_path = (
+        WORKFLOW.parents[2] / "buildtools" / "hooks" / "hook-transformers.py"
+    )
+    spec = importlib.util.spec_from_file_location("hook_transformers", hook_path)
+    hook_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook_module)
+
+    assert hook_module.module_collection_mode == "py", (
+        "'pyz+py' was tried and failed identically on real CI - it keeps "
+        "the archived copy as the one actually imported. Only 'py' (no "
+        "archived alternative at all) forces loading from the real file."
+    )
+
+
+def test_spacy_alignments_is_collected():
+    """Real, reported crash on the first real macOS CI run to get PAST the
+    long-running transformers/models os.listdir() issue (confirming that
+    fix actually worked): ModuleNotFoundError: No module named
+    'spacy_alignments'. spacy_transformers declares this as a real,
+    required dependency (confirmed: `pip show spacy-transformers` lists it
+    under Requires), but it is a native-compiled package (Rust-backed, per
+    its own PyPI summary - confirmed directly: a single .so extension file,
+    no further pip-declared dependencies of its own) never listed in
+    requirements.txt at all, only installed transitively. PyInstaller's
+    static import analysis cannot trace into a compiled extension's own
+    runtime imports to discover this on its own.
+    """
+    import buildtools.build as build_module
+
+    assert "spacy_alignments" in build_module.COLLECT_ALL
+
+
+def test_curated_transformers_packages_are_collected():
+    """Real, reported crash on the first real macOS CI run to get PAST both
+    the transformers/models os.listdir() issue AND the spacy_alignments
+    gap: ValueError: [E002] Can't find factory for 'curated_transformer'.
+
+    Verified directly, not assumed: en_core_web_trf-3.7.3's actual
+    config.cfg uses ONLY spacy-curated-transformers architectures
+    (RobertaTransformer.v1, LastTransformerLayerListener.v1,
+    ByteBpeEncoder.v1) for its "curated_transformer" pipeline factory -
+    never spacy_transformers' own "transformer" factory. spacy-curated-
+    transformers is a real, required dependency of the en_core_web_trf
+    wheel itself (confirmed: `pip show en-core-web-trf` lists it under
+    Requires), auto-installed transitively when the model wheel installs,
+    but was never explicitly bundled by PyInstaller. curated_tokenizers is
+    a native, compiled package (C++/Cython .so extensions, confirmed
+    directly) - same class of gap as spacy_alignments.
+
+    Also verified directly that the model actually loads and produces
+    correct entities once these packages are available - not just that
+    they are importable.
+    """
+    import buildtools.build as build_module
+
+    for pkg in ("spacy_curated_transformers", "curated_transformers", "curated_tokenizers"):
+        assert pkg in build_module.COLLECT_ALL
+
+
+def test_every_release_build_ships_the_llm_engine_with_no_bundled_model():
+    """Direct instruction (original): every build should have everything -
+    code, files, packages, and the LLM - not an opt-in extra. That
+    instruction's meaning changed with a later one: the user now chooses
+    and downloads a model themselves on first launch
+    (app/ui/model_picker.py), so no .gguf model file is ever fetched or
+    bundled at build time at all anymore - removed after a real GitHub
+    Releases 2 GB-per-asset limit made bundling any model a genuine,
+    recurring constraint. What "every build ships with everything" means
+    now: the llama.cpp inference ENGINE is still always installed and
+    bundled in every job (it is what actually runs whatever model the
+    user later downloads), but fetch_models.py, build.py and
+    verify_bundle.py take no LLM-related flag at all anymore - there is
+    nothing left for a flag to control.
+
+    Checks all three jobs: the Linux "test" job (so the auditor's own
+    tests exercise the real engine, not a mocked one, wherever they do),
+    and both platform build jobs that produce what actually ships.
+    """
+    workflow = WORKFLOW.read_text()
+
+    assert workflow.count("llama-cpp-python>=0.3.16") == 3, (
+        "llama-cpp-python must be installed in all three jobs (test, "
+        "windows, macos) - the app always needs the inference engine "
+        "bundled, regardless of which model the user later downloads"
+    )
+    # The Windows job's PowerShell syntax splits this into separate array
+    # elements ("--extra-index-url", "https://...") rather than one
+    # contiguous string like the two bash jobs - check both parts appear
+    # the right number of times rather than one exact substring.
+    assert workflow.count("--extra-index-url") == 3
+    assert workflow.count("https://abetlen.github.io/llama-cpp-python/whl/cpu") == 3
+
+    assert "--with-llm" not in workflow, (
+        "the flag no longer exists anywhere - no model is bundled at "
+        "build time at all, so nothing is left for it to control"
+    )
+    assert workflow.count("fetch_models.py") == 3
+    assert "build.py\n" in workflow or workflow.count("build.py") >= 2
+
+
+def test_both_platform_builds_check_the_github_release_size_limit():
+    """Real, reported failure: a complete, correct Windows build failed to
+    publish because the final zip exceeded GitHub Releases' hard,
+    non-configurable 2 GB-per-asset limit (2147483648 bytes = exactly
+    2^31) - confirmed directly from the actual error: "size must be less
+    than 2147483648". The build succeeded; only the LAST step of the
+    entire workflow failed, after everything else had already passed,
+    wasting the full build. Both platform jobs must check the real,
+    compressed artifact's actual size against this same limit immediately
+    after it exists - not just rely on reverting the model size and
+    hoping - so a future regression (even an unrelated one, like the base
+    app growing) fails loudly and early instead of silently passing every
+    other check and only surfacing at the slowest, most expensive step.
+    """
+    for name, config in _workflow()["jobs"].items():
+        if name == "test":
+            continue  # the Linux test job produces no release artifact
+        step = next(
+            (s for s in config["steps"] if "release size limit" in str(s.get("name", ""))),
+            None,
+        )
+        assert step is not None, f"{name} has no release-size-limit check"
+        assert "2147483648" in step["run"], f"{name}'s size check does not use GitHub's real limit"
