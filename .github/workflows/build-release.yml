@@ -1,0 +1,357 @@
+name: Build and release
+
+# Builds run on native GitHub-hosted runners because the .exe and .dmg cannot be
+# produced from a Linux development machine (spec section 57).
+#
+# Push to the branch  -> builds, uploads artifacts.
+# Push a v* tag       -> builds, uploads artifacts, publishes a GitHub Release.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.12"
+  # Pinned model wheel. Installed from a URL, never downloaded by the app itself.
+  SPACY_MODEL_WHEEL: "https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.7.3/en_core_web_trf-3.7.3-py3-none-any.whl"
+
+jobs:
+  test:
+    timeout-minutes: 45
+    name: Tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          install() {
+            for attempt in 1 2 3; do
+              pip install --no-cache-dir --retries 5 --timeout 60 "$@" && return 0
+              echo "::warning::pip attempt $attempt failed for: $*"
+              pip cache purge || true
+              sleep $((attempt * 10))
+            done
+            return 1
+          }
+          install -r requirements-dev.txt
+          install "${SPACY_MODEL_WHEEL}"
+      - name: Install the LLM runtime
+        # A corrupt wheel on this CPU index has killed builds before (see
+        # CLAUDE.md) - the open-ended >=0.3.16 constraint always resolves
+        # to the newest release, and when THAT specific file is corrupted
+        # at the source, retrying the same version just re-downloads the
+        # same broken bytes. Confirmed directly: a real macOS build hit
+        # `zlib.error: invalid block type` on 0.3.36 three times in a row,
+        # with `pip cache purge` reporting 0 files removed each time - the
+        # corruption is server-side, not a local cache artifact a purge
+        # could fix. Falls back through specific, previously-proven-good
+        # versions (0.3.35, then 0.3.16) rather than only retrying the
+        # one version that may itself be the broken file.
+        run: |
+          install_llm_runtime() {
+            for spec in "llama-cpp-python>=0.3.16" "llama-cpp-python==0.3.35" "llama-cpp-python==0.3.16"; do
+              for attempt in 1 2 3; do
+                pip install --no-cache-dir --retries 5 --timeout 60 "$spec" \
+                  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu && return 0
+                echo "::warning::pip attempt $attempt failed for: $spec"
+                pip cache purge || true
+                sleep $((attempt * 10))
+              done
+              echo "::warning::all attempts for $spec failed; trying the next version"
+            done
+            return 1
+          }
+          install_llm_runtime
+      - name: Fetch the bundled models
+        # After the runtime install, never before: the weights and the runtime
+        # are both required and neither should depend on the other's ordering.
+        run: python buildtools/fetch_models.py
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0
+      - name: Run the full suite
+        # GUI tests are back in the gate: the teardown crash was a test leaving
+        # a worker running, not a Qt defect. 10 consecutive clean runs.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests -q
+      - name: End-to-end CLI run on synthetic fixtures
+        # The audit model is exercised by its own short step below. Running it
+        # over every page here takes tens of minutes on a CPU-only runner.
+        env:
+          DOCANON_LLM: "0"
+        run: |
+          python -m tests.fixtures build/fixtures
+          python -m app.cli process build/fixtures/form.pdf --accept-all -o build/form.anon.pdf
+          python -m app.cli process build/fixtures/stacked.pdf --accept-all -o build/stacked.anon.pdf
+
+  windows:
+    timeout-minutes: 60
+    name: Windows .exe
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          function Install-Retry {
+            param([string[]]$PipArgs)
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              pip install --no-cache-dir --retries 5 --timeout 60 @PipArgs
+              if ($LASTEXITCODE -eq 0) { return }
+              Write-Warning "pip attempt $attempt failed: $PipArgs"
+              pip cache purge
+              Start-Sleep -Seconds ($attempt * 10)
+            }
+            throw "pip failed after 3 attempts: $PipArgs"
+          }
+          Install-Retry @("-r", "requirements-dev.txt")
+          Install-Retry @("pyinstaller==6.11.1")
+          Install-Retry @("${env:SPACY_MODEL_WHEEL}")
+      - name: Install the LLM runtime
+        # A corrupt wheel on this CPU index has killed builds before (see
+        # CLAUDE.md) - the open-ended >=0.3.16 constraint always resolves
+        # to the newest release, and when THAT specific file is corrupted
+        # at the source, retrying the same version just re-downloads the
+        # same broken bytes. Confirmed directly: a real macOS build hit
+        # `zlib.error: invalid block type` on 0.3.36 three times in a row,
+        # with `pip cache purge` reporting 0 files removed each time - the
+        # corruption is server-side, not a local cache artifact a purge
+        # could fix. Falls back through specific, previously-proven-good
+        # versions (0.3.35, then 0.3.16) rather than only retrying the
+        # one version that may itself be the broken file.
+        run: |
+          function Install-Retry {
+            param([string[]]$PipArgs)
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              pip install --no-cache-dir --retries 5 --timeout 60 @PipArgs
+              if ($LASTEXITCODE -eq 0) { return }
+              Write-Warning "pip attempt $attempt failed: $PipArgs"
+              pip cache purge
+              Start-Sleep -Seconds ($attempt * 10)
+            }
+            throw "pip failed after 3 attempts: $PipArgs"
+          }
+          $indexUrl = "https://abetlen.github.io/llama-cpp-python/whl/cpu"
+          $versionSpecs = @(
+            "llama-cpp-python>=0.3.16",
+            "llama-cpp-python==0.3.35",
+            "llama-cpp-python==0.3.16"
+          )
+          $installed = $false
+          foreach ($spec in $versionSpecs) {
+            try {
+              Install-Retry @($spec, "--extra-index-url", $indexUrl)
+              $installed = $true
+              break
+            } catch {
+              Write-Warning "all attempts for $spec failed; trying the next version"
+            }
+          }
+          if (-not $installed) {
+            throw "llama-cpp-python: all version fallbacks failed"
+          }
+      - name: Fetch the bundled models
+        # After the runtime install, never before: the weights and the runtime
+        # are both required and neither should depend on the other's ordering.
+        run: python buildtools/fetch_models.py
+      - name: Confirm the model is installed before packaging
+        run: python -c "import spacy; spacy.require_cpu(); spacy.load('en_core_web_trf'); print('model OK, CPU')"
+      - name: Run the regression suite on this runner
+        # The Linux job gates the build, but PyMuPDF text extraction, font
+        # metrics and path handling differ per platform - and this is the exact
+        # machine that produces the installer.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests -q
+      - name: End-to-end CLI run on this runner
+        env:
+          DOCANON_LLM: "0"
+        run: |
+          python -m tests.fixtures build/fixtures
+          python -m app.cli process build/fixtures/form.pdf --accept-all -o build/form.anon.pdf
+          python -m app.cli process build/fixtures/stacked.pdf --accept-all -o build/stacked.anon.pdf
+      - name: Build
+        run: python buildtools/build.py
+      - name: Verify the bundle is actually complete
+        # Fast, file-presence-only checks - catches an obviously missing
+        # package (like the transformers/models/__init__.py gap that
+        # shipped once already) before paying for a full model-load in the
+        # self-test step below. This script existed but was never actually
+        # wired into CI - it would have caught that regression days
+        # earlier than the self-test did.
+        run: python buildtools/verify_bundle.py
+      - name: Self-test the FROZEN executable itself
+        # The step above only proves the CI runner's own, unfrozen Python can
+        # import everything - it cannot catch a PyInstaller-freezing-specific
+        # bundling bug (e.g. two packages vendoring conflicting copies of an
+        # overlapping shared library, merged into one flat directory only
+        # when frozen). This is the first point in the whole workflow that
+        # actually executes the shipped artifact.
+        run: .\dist\DocumentAnonymizer\DocumentAnonymizer.exe --self-test
+      - name: Read version
+        id: v
+        shell: bash
+        run: echo "version=$(python -c 'import app.version;print(app.version.__version__)')" >> $GITHUB_OUTPUT
+      - name: Name the artifact
+        shell: bash
+        run: |
+          mkdir -p out
+          cp -r dist/DocumentAnonymizer "out/DocumentAnonymizer-Windows-v${{ steps.v.outputs.version }}"
+          cd out && 7z a "DocumentAnonymizer-Windows-v${{ steps.v.outputs.version }}.zip" "DocumentAnonymizer-Windows-v${{ steps.v.outputs.version }}"
+      - name: Verify the artifact fits GitHub's release size limit
+        # Real, reported failure: a real build succeeded completely, then
+        # the LAST step of the entire workflow - publishing the release -
+        # failed with "size must be less than 2147483648", wasting the
+        # full build after everything else had already passed. GitHub
+        # Releases rejects any single asset over 2 GB (2147483648 bytes =
+        # exactly 2^31) - a hard platform ceiling, not configurable.
+        # Checked here, right after the real artifact exists and before
+        # either upload step, so this fails loudly and immediately instead
+        # of silently passing every other check and only surfacing at the
+        # very last, slowest step.
+        shell: bash
+        run: |
+          file=$(ls out/*.zip)
+          size=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file")
+          limit=2147483648
+          echo "artifact: $file ($size bytes, limit $limit)"
+          if [ "$size" -ge "$limit" ]; then
+            echo "::error::$file is $size bytes - GitHub Releases rejects anything >= $limit bytes. The build is complete and correct; it is too large to publish as a release asset. See CLAUDE.md's entry on the 2GB release limit."
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DocumentAnonymizer-Windows-v${{ steps.v.outputs.version }}
+          path: out/*.zip
+          if-no-files-found: error
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: out/*.zip
+          generate_release_notes: true
+
+  macos:
+    timeout-minutes: 60
+    name: macOS .dmg
+    needs: test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          install() {
+            for attempt in 1 2 3; do
+              pip install --no-cache-dir --retries 5 --timeout 60 "$@" && return 0
+              echo "::warning::pip attempt $attempt failed for: $*"
+              pip cache purge || true
+              sleep $((attempt * 10))
+            done
+            return 1
+          }
+          install -r requirements-dev.txt
+          install pyinstaller==6.11.1
+          install "$SPACY_MODEL_WHEEL"
+      - name: Install the LLM runtime
+        # A corrupt wheel on this CPU index has killed builds before (see
+        # CLAUDE.md) - the open-ended >=0.3.16 constraint always resolves
+        # to the newest release, and when THAT specific file is corrupted
+        # at the source, retrying the same version just re-downloads the
+        # same broken bytes. Confirmed directly: a real macOS build hit
+        # `zlib.error: invalid block type` on 0.3.36 three times in a row,
+        # with `pip cache purge` reporting 0 files removed each time - the
+        # corruption is server-side, not a local cache artifact a purge
+        # could fix. Falls back through specific, previously-proven-good
+        # versions (0.3.35, then 0.3.16) rather than only retrying the
+        # one version that may itself be the broken file.
+        run: |
+          install_llm_runtime() {
+            for spec in "llama-cpp-python>=0.3.16" "llama-cpp-python==0.3.35" "llama-cpp-python==0.3.16"; do
+              for attempt in 1 2 3; do
+                pip install --no-cache-dir --retries 5 --timeout 60 "$spec" \
+                  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu && return 0
+                echo "::warning::pip attempt $attempt failed for: $spec"
+                pip cache purge || true
+                sleep $((attempt * 10))
+              done
+              echo "::warning::all attempts for $spec failed; trying the next version"
+            done
+            return 1
+          }
+          install_llm_runtime
+      - name: Fetch the bundled models
+        # After the runtime install, never before: the weights and the runtime
+        # are both required and neither should depend on the other's ordering.
+        run: python buildtools/fetch_models.py
+      - name: Confirm the model is installed before packaging
+        run: python -c "import spacy; spacy.require_cpu(); spacy.load('en_core_web_trf'); print('model OK, CPU')"
+      - name: Run the regression suite on this runner
+        # The Linux job gates the build, but PyMuPDF text extraction, font
+        # metrics and path handling differ per platform - and this is the exact
+        # machine that produces the installer.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests -q
+      - name: End-to-end CLI run on this runner
+        env:
+          DOCANON_LLM: "0"
+        run: |
+          python -m tests.fixtures build/fixtures
+          python -m app.cli process build/fixtures/form.pdf --accept-all -o build/form.anon.pdf
+          python -m app.cli process build/fixtures/stacked.pdf --accept-all -o build/stacked.anon.pdf
+      - name: Build .app and .dmg
+        run: python buildtools/build.py --dmg
+      - name: Verify the bundle is actually complete
+        run: python buildtools/verify_bundle.py
+      - name: Self-test the FROZEN executable itself
+        # Same reasoning as the Windows job: the CLI run above only proves
+        # the runner's own unfrozen Python works, never the frozen bundle.
+        run: ./dist/DocumentAnonymizer.app/Contents/MacOS/DocumentAnonymizer --self-test
+      - name: Read version
+        id: v
+        run: echo "version=$(python -c 'import app.version;print(app.version.__version__)')" >> $GITHUB_OUTPUT
+      - name: Verify the artifact fits GitHub's release size limit
+        # Same reasoning as the Windows job - see that step's comment.
+        # GitHub Releases rejects any single asset over 2 GB
+        # (2147483648 bytes = exactly 2^31). Checked here, right after the
+        # real .dmg exists, before either upload step.
+        run: |
+          file=$(ls dist/*.dmg)
+          size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file")
+          limit=2147483648
+          echo "artifact: $file ($size bytes, limit $limit)"
+          if [ "$size" -ge "$limit" ]; then
+            echo "::error::$file is $size bytes - GitHub Releases rejects anything >= $limit bytes. The build is complete and correct; it is too large to publish as a release asset. See CLAUDE.md's entry on the 2GB release limit."
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DocumentAnonymizer-macOS-v${{ steps.v.outputs.version }}
+          path: dist/*.dmg
+          if-no-files-found: error
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: dist/*.dmg
+          generate_release_notes: true
