@@ -152,6 +152,10 @@ def is_placeholder_value(text: str) -> bool:
 # -- value line discovery ---------------------------------------------------
 
 
+#: A line that opens with its own caption and a colon starts a new field.
+_OWN_LABEL = re.compile(r"^[\s\-\u2010-\u2015\u2022*]*[A-Za-z][A-Za-z '&/().#\-]{1,40}:(\s|$)")
+
+
 def _preliminary_groups(labels, lines_by_page, label_keys) -> list[LogicalFieldGroup]:
     """Conservative label->value pairs, used only to learn the form's typeface."""
     out = []
@@ -245,6 +249,12 @@ def _value_lines_for(
                 continue
             if form_styles and line_style(candidate_line) in form_styles:
                 break  # the form's own text: this field has ended
+            if _OWN_LABEL.match(candidate_line.text):
+                # "- Date of Withdrawal:  04/11/2022" under "- Routing Transit
+                # Number:" is the NEXT field, not this one's value. Bound as a
+                # value it was typed ROUTING_NUMBER and shape-masked into
+                # scrambled text on a real return.
+                break
             if candidate_line.key() in label_keys or candidate_line.key() in claimed:
                 break
             gap = candidate_line.bbox[1] - prev_bottom

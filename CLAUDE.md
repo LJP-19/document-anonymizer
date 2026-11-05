@@ -2475,3 +2475,13 @@ accuracy change works; a candidate-text benchmark cannot see collateral damage.
 `buildtools/qa_run.py` produces QA outputs for real documents with an independent
 verification and writes only sanitized results (no values, no snippets). Its
 `_private_mappings` folder (the pseudonym workbook) holds originals - never ship it.
+
+## A line that opens with its own caption is the NEXT field (groups._OWN_LABEL)
+
+Column-aware binding (above) let "- Routing Transit Number:" bind the line below
+it, "- Date of Withdrawal:  <date>", as its value; the date satisfied the
+digit-type check and the line was typed ROUTING_NUMBER and shape-masked into
+scrambled letters. A stacked candidate that starts with "<caption>:" ends the
+field. Label detection also ignores a leading bullet/dash now (`labels.BULLET_RE`).
+Lesson: every relaxation of the stacking loop needs a matching "this is a new
+field" stop; check the real-sample previews, not only the scores.

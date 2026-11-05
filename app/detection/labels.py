@@ -18,8 +18,12 @@ COLON_RE = re.compile(r"^(?P<label>[^:]{2,60}):\s*(?P<value>.*)$")
 LEADER_RE = re.compile(r"[.\u2026_\-]{2,}\s*$")
 
 
+#: A list bullet before a label ("- Date of Withdrawal:", "• Account Number:").
+BULLET_RE = re.compile(r"^[\s\-\u2010-\u2015\u2022\u25cf\u25aa*]+")
+
+
 def _clean(text: str) -> str:
-    return LEADER_RE.sub("", text).strip()
+    return BULLET_RE.sub("", LEADER_RE.sub("", text)).strip()
 
 
 GENERIC_LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9 '&/().,\-]{1,44}$")

@@ -441,3 +441,21 @@ def test_a_tightly_set_value_does_not_erase_the_amount_above(tmp_path):
         text = d[0].get_text()
     assert "604-27-1185" not in text
     assert "$4210.35" in text
+
+
+def test_a_captioned_line_is_the_next_field_not_the_value_above(tmp_path):
+    """"- Date of Withdrawal: <date>" under an empty "- Routing Transit Number:"
+    was bound as the routing number's value and shape-masked into scrambled text."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for k, line in enumerate(["- Account Number:", "- Routing Transit Number:", "- Date of Withdrawal:     04/14/2022"]):
+        page.insert_text((36, 100 + 12 * k), line, fontsize=10, fontname="cour")
+    src = str(tmp_path / "debit.pdf")
+    doc.save(src)
+    s = AnonymizationSession(source_path=src)
+    s.analyse()
+    s.decisions.set_state(s.candidates, DecisionState.ACCEPTED)
+    out = tmp_path / "debit.out.pdf"
+    s.process(str(out))
+    with pymupdf.open(str(out)) as d:
+        assert "Date of Withdrawal" in d[0].get_text()
