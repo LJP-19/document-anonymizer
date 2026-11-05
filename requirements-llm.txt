@@ -1,0 +1,18 @@
+# The local LLM audit engine (llama-cpp-python itself - not any model's
+# weights, which are never bundled at all; the user downloads one
+# themselves on first launch, see app/ui/model_picker.py).
+#
+# Still kept out of requirements.txt, but for a DIFFERENT reason than
+# before: it needs a non-default --extra-index-url for the CPU wheel,
+# which requirements.txt alone cannot express. It is NOT optional for
+# release builds anymore - the CI workflow always installs it (with a
+# multi-version fallback for a real, documented history of this wheel
+# being served corrupt from its CPU index: BadZipFile: Bad CRC-32 on
+# libggml-base) - this file exists mainly for local development
+# convenience, so someone who only wants to work on the rest of the app
+# can skip it.
+#
+# Install with:
+#   pip install -r requirements-llm.txt \
+#     --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+llama-cpp-python>=0.3.16
