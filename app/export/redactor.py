@@ -42,6 +42,58 @@ class ApplyReport:
         self.hidden_actions = self.hidden_actions or []
 
 
+#: Share of a target's character-box height trimmed from top and bottom before
+#: REMOVAL. Only the removal rectangle - replacement placement uses the full
+#: target rect and is unchanged (see CLAUDE.md on _insert_replacement).
+REMOVAL_INSET = 0.2
+
+
+def clear_of_neighbours(rect: pymupdf.Rect, target, words) -> pymupdf.Rect:
+    """Shrink a removal rectangle vertically so it stops short of every word
+    that is NOT part of the target (its centre lies outside the target's box).
+
+    Measured on a real return: a value set tightly under an amount line
+    ("$4210.35") still intersected the amount's character boxes after the
+    inset, and the amount was lost - a financial value must survive. The
+    rectangle keeps at least 30% of the target's height, so it always still
+    intersects every target glyph (which PyMuPDF then removes whole).
+    """
+    t = pymupdf.Rect(target)
+    r = pymupdf.Rect(rect)
+    min_h = 0.3 * t.height
+    for w in words:
+        wx0, wy0, wx1, wy1 = w[:4]
+        cx, cy = (wx0 + wx1) / 2, (wy0 + wy1) / 2
+        if t.x0 <= cx <= t.x1 and t.y0 <= cy <= t.y1:
+            continue                      # part of the target itself
+        if wx1 <= r.x0 or wx0 >= r.x1 or wy1 <= r.y0 or wy0 >= r.y1:
+            continue                      # does not touch the removal box
+        if cy < (t.y0 + t.y1) / 2:        # neighbour above
+            r.y0 = min(max(r.y0, wy1 + 0.05), r.y1 - min_h)
+        else:                             # neighbour below
+            r.y1 = max(min(r.y1, wy0 - 0.05), r.y0 + min_h)
+    return r
+
+
+def removal_rect(rect) -> pymupdf.Rect:
+    """The rectangle handed to add_redact_annot.
+
+    PyMuPDF removes EVERY character whose box intersects the redaction
+    rectangle, and a PDF character box runs from the font's ascent to its
+    descent - well above and below the visible glyph. On a dense form the value
+    line's box overlaps the label line just above it, so redacting the value
+    erased the label too. Reproduced: a 10pt value 9pt under a 7pt label - the
+    full box removed the whole label "Your social security number"; this inset
+    removed every glyph of the value and none of the label. Characters are
+    removed whole, so the inset can never leave part of a target glyph behind;
+    `test_redaction_box_does_not_erase_the_label_above` and the verifier's
+    glyph-residue check pin both sides.
+    """
+    r = pymupdf.Rect(rect)
+    dy = r.height * REMOVAL_INSET
+    return pymupdf.Rect(r.x0 + 0.2, r.y0 + dy, r.x1 - 0.2, r.y1 - dy)
+
+
 def apply_plan(plan: TransformationPlan, doc: Optional[pymupdf.Document] = None) -> tuple[pymupdf.Document, ApplyReport]:
     """Apply the plan to a copy of the source document. Never mutates the original file."""
     with PDF_LOCK:
@@ -55,8 +107,9 @@ def apply_plan(plan: TransformationPlan, doc: Optional[pymupdf.Document] = None)
                 targets = plan.targets_for_page(page_no)
 
                 # 1. Mark and permanently remove the original content.
+                words = page.get_text("words")
                 for t in targets:
-                    rect = pymupdf.Rect(t.rect)
+                    rect = clear_of_neighbours(removal_rect(t.rect), t.rect, words)
                     page.add_redact_annot(rect, fill=None)
                     report.redacted += 1
 

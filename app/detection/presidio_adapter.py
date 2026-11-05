@@ -35,6 +35,7 @@ Architectural guardrails this module holds to:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -73,6 +74,31 @@ MIN_SCORE = 0.35
 SSN_CONTEXT = ["ssn", "social", "security", "taxpayer", "number"]
 EIN_CONTEXT = ["ein", "employer", "identification", "federal", "number"]
 ITIN_CONTEXT = ["itin", "individual", "taxpayer", "identification", "number"]
+
+
+def _force_offline_tldextract() -> None:
+    """Stop Presidio's email recognizer from downloading the public-suffix list.
+
+    presidio-analyzer's EmailRecognizer calls `tldextract.extract()`, whose
+    default extractor fetches https://publicsuffix.org/list/... on first use.
+    Measured: analysing any document with an e-mail-shaped token attempted that
+    request (it failed behind a proxy and fell back to the bundled snapshot - on
+    an open network it would have SUCCEEDED, i.e. the app phoned out while a
+    client's document was open). Rule 10: no network at runtime.
+
+    `extract()` looks up the module-level TLD_EXTRACTOR at call time, so
+    replacing it with an extractor that has no suffix-list URLs makes every
+    call use the snapshot shipped inside the tldextract package.
+    """
+    try:
+        import tldextract.tldextract as _tld
+    except Exception:  # tldextract absent: nothing can reach the network
+        return
+    if getattr(_tld.TLD_EXTRACTOR, "_docanon_offline", False):
+        return
+    offline = _tld.TLDExtract(suffix_list_urls=(), cache_dir=None, fallback_to_snapshot=True)
+    offline._docanon_offline = True
+    _tld.TLD_EXTRACTOR = offline
 
 
 class PresidioUnavailable(RuntimeError):
@@ -149,6 +175,8 @@ class PresidioDetector:
                 "pip install -r requirements-presidio.txt"
             )
             raise PresidioUnavailable(self._error) from None
+
+        _force_offline_tldextract()
 
         try:
             nlp_engine = _build_reused_nlp_engine(spacy_nlp) if spacy_nlp is not None else None
@@ -429,4 +457,32 @@ def detect_presidio(
         candidates.extend(
             _analyze_unstructured_blocks(doc, detector, _labelled_line_keys(groups))
         )
-    return candidates, warnings
+    return _personal_dates_only(candidates, context_by_line), warnings
+
+
+#: A date identifies a person only through what it is the date OF.
+PERSONAL_DATE_CUE = re.compile(
+    r"\b(birth|born|dob|d\.o\.b|death|died|deceased|decedent|marri|wedding|divorc|adopt|"
+    r"hire|hired|admission|admitted|discharge|visit|appointment)", re.I)
+
+
+def _personal_dates_only(candidates: list[Candidate], context_by_line: dict) -> list[Candidate]:
+    """Drop Presidio DATE_TIME proposals that are not about a person.
+
+    Presidio returns every date as DATE_TIME, mapped to PERSONAL_DATE. On a tax
+    return that is payment due dates, withdrawal dates, voucher schedules and
+    tax-year ends - measured on a synthetic return, five of five Presidio dates
+    were such, and each was redacted as personal. The deterministic DOB rule
+    already requires a birth cue (pii_rules.yaml `context_required`); this
+    holds the optional proposer to the same contract. A date under a DOB label
+    is still caught by the label/group layer, which does not depend on this.
+    """
+    kept = []
+    for c in candidates:
+        if c.pii_type is PiiType.PERSONAL_DATE:
+            context = context_by_line.get(c.line.key())
+            words = " ".join(context.words) if context else ""
+            if not PERSONAL_DATE_CUE.search(c.line.text) and not PERSONAL_DATE_CUE.search(words):
+                continue
+        kept.append(c)
+    return kept

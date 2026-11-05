@@ -7,8 +7,40 @@ honest state of what is and is not done.
 
 ## Current version
 
-**0.38.0** (bumped once, at the end of this work - not per intermediate edit,
-per instruction).
+**0.39.0** - accuracy audit against real, software-prepared returns (below).
+
+## This pass (0.39.0): real-document accuracy audit
+
+Diagnostic input: three 108-page, software-prepared individual returns that earlier
+app versions had already processed (kept out of the repository and out of every
+artifact). Baseline = v0.38.2 at commit d572da3 on the same working copies, same
+stack (en_core_web_trf; GLiNER weights unavailable in the sandbox; Presidio and the
+LLM off - the shipped configuration). Scoring is on the WRITTEN file, word by word.
+
+| Measure | v0.38.2 | 0.39.0 |
+|---|---:|---:|
+| Real samples, precision / recall / F1 | 0.444 / 0.850 / 0.583 | 0.839 / 0.899 / 0.868 |
+| Real samples, false-positive / missed words | 2873 / 405 | 465 / 271 |
+| Synthetic form corpus, precision / recall / F1 | 0.825 / 0.867 / 0.845 | 1.000 / 1.000 / 1.000 |
+| App verifier on real samples | FAIL x3 | independent critical checks pass x3; app verifier still flags fragments |
+
+Root causes fixed (each has a test in `tests/test_form_layout_regressions.py`; the
+durable rules are in CLAUDE.md "v0.39.0 audit"): column-blind value binding;
+cross-page label geometry veto; "LAKESIDE CITY" read as a label; longest-match label
+typing; short surnames excluded from identity tracking; name control on scanlines;
+name-shaped form text (now recognised by typeset style); IRS mailing addresses;
+bare states; placeholders; numberless model "streets"; honorifics; phones without a
+separator; DOBs on caption-less pages; redaction boxes erasing the neighbouring line
+(and an amount); pseudonyms reusing another value's words; verifier false alarm on
+ordinary words; Presidio's runtime network call and its non-personal dates.
+
+Not done / open: GLiNER was not exercised (weights unreachable here) - CI exercises
+it; a person's first name or surname appearing ALONE on a page where nothing detected
+it still survives in a few places (the app verifier reports these); 6 of 12 scored
+dates of birth on the real samples are still missed; the real samples are outputs of
+earlier versions, so they contain old red pseudonyms and are not a clean ground truth;
+three documents of one form family are not proof of general accuracy.
+
 
 ## Passes 0.37.19 - 0.37.30 (catch-up entry; full reasoning for each is in CLAUDE.md)
 

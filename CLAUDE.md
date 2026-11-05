@@ -2382,3 +2382,96 @@ Local runs on the small spaCy model, or without GLiNER, missed 18 failures that 
 
 ## The model is told the label; the label's type is not overruled by the model
 `_label_hints` feeds "value <- label" pairs to the adjudication prompt. A value whose type its label agrees with is never dropped because the model said "form" or "business" (`label_agreed` in `analyse`). Do not remove that filter: a small model will call a name "business" now and then.
+
+
+## v0.39.0 audit: root causes found on real software-prepared returns
+
+Measured on three real 108-page returns (never committed) and reproduced on the
+fictional `benchmark/forms_corpus.py`. Each item has a test in
+`tests/test_form_layout_regressions.py`.
+
+- **Stacked values are found by COLUMN, not reading order** (`groups._value_lines_for`).
+  The old loop walked every line below a label in page order and `break`ed at the
+  first misaligned one - on a row of side-by-side labels that was the LEFT column's
+  value, so only the leftmost label on any row ever bound a value. Lines in another
+  column are skipped (`continue`), never fatal. Do not turn that back into `break`.
+- **`veto_by_label_geometry` compares the SAME PAGE only.** It used to test every
+  label on every page; on a long return nearly every x/y is a label somewhere, and
+  detections were deleted document-wide.
+- **A city value ending in "City"/"Town" is not a label** (`labels._is_place_name`).
+  The address-label regex matched "CITY" inside "LAKESIDE CITY" and protected it.
+- **Labels are typed by their HEAD NOUN** (match nearest the end): "Spouse's DOB" is
+  a DOB, not a PERSON.
+- **Short names (2-3 letters) are tracked** - `entities_pass._short_name_ok/_short_form_ok/
+  _short_match_ok`. `MIN_PROPAGATION_LENGTH` silently excluded Li/Wu/Ng/Lim/Kim/Ho from
+  identity tracking. A short token propagates only when a PERSON field label confirmed
+  it, it is written Capitalised or ALL CAPS, is not a state code or form word, and it
+  is flagged for review. Do not drop the case guard: lowercase "li"/"ng" in prose is
+  not the person.
+- **Name control on scanlines** (`name_control_hits`): first 4 letters of a known
+  surname, only on code-like lines (>=50% numeric tokens).
+- **Form text is recognised by TYPESET STYLE** (`layout_style.py`). A (font, colour)
+  is the form's when it carries >=5 WHOLE-LINE labels and is almost never (<=3%) a
+  value under a label of another style - and only when the document has a value FONT
+  (judged across colours, e.g. Courier). Two earlier criteria failed on a real
+  108-page return (one rejected the template font, one made the VALUE font "form");
+  the measured numbers are in the docstring - re-measure before changing it.
+  Uses: (1) name/org/place PROPOSALS in a form style are vetoed (main pass and second
+  pass via `DetectionResult.form_styles`); (2) `groups._value_lines_for` stops a field
+  at a line set in a form style, so a label never binds the instruction lines below it.
+  Styles are learned from a STRICT pre-pass of the grouping (no column skipping).
+- **The document's own vocabulary** (`layout_style.form_vocabulary` + running chrome
+  lines): a model-only person/org made only of words this document prints in its form
+  typeface (>=3 times) or in a repeated non-name chrome line is dropped, main pass and
+  second pass. Never contains a word a rule or field label bound as a value. Name-shaped
+  repeated lines are NOT chrome (a person in a fixed header is still a person).
+- **A model-only guess no longer exempts a repeated line from the chrome veto**
+  (`form_text.detect_form_text`) unless the line itself is name-shaped. Rules, labels,
+  joint names and propagation still exempt it - the CLAUDE.md rule against narrowing
+  the exemption to labels/groups is kept; only bare NER guesses lost it.
+- **A date-only line with birth-plausible years beside an identity block is a DOB**
+  (`engine._dates_beside_identity`): machine-readable state pages print values with no
+  caption. Flagged for review; recent dates and lines with money are untouched.
+- **Redaction removal rectangle is inset 20% vertically** (`redactor.removal_rect`).
+  PyMuPDF removes EVERY character whose box intersects the rectangle; full
+  ascent-to-descent boxes on a dense form erased the label row above a value. Only the
+  removal rect - replacement placement is unchanged, `insert_text(` fallback intact.
+- **Pseudonyms never contain a word of any detected value** (`EntityRegistry.document_words`,
+  names seeded via `note_original`): a generated city equal to a real value redacted
+  elsewhere put that value back into the file.
+- **Public bodies' mailing addresses are form text** (`form_text.AGENCY`): the block
+  under "Internal Revenue Service" etc. It lives in form_text so every path (gate,
+  second pass) honours it.
+- **A state alone is not PII** (`engine._drop_bare_states`); a model-only STREET with
+  no digit is a public place (`_drop_numberless_model_streets`); honorifics are not
+  part of the redacted name (`_trim_honorifics`); placeholders like "Self-Prepared"
+  under a name label are not names (`groups.PLACEHOLDER_VALUES`).
+- **Phone `(510)555-0142`** (no separator after the bracketed area code) is how tax
+  software prints phones; the rule required a separator.
+- **Address pseudonyms keep the original's KIND and case** - a city alone gets a city,
+  a comma-less "CITY ST ZIP" line gets one, ZIP+4 stays ZIP+4.
+- **Verifier fragment checks have a source baseline** (`_token_counts_outside_targets`):
+  a word of a redacted value that also occurs as ordinary text outside every box is
+  not a fragment. A real leak still exceeds the baseline and fails - a test pins it.
+
+## Presidio must never reach the network, and only proposes personal dates
+
+`presidio_adapter._force_offline_tldextract()` - presidio's EmailRecognizer calls
+`tldextract.extract()`, whose default extractor downloads the public-suffix list on
+first use. Observed: a runtime request to publicsuffix.org while a document was open.
+`_personal_dates_only` holds DATE_TIME proposals to the deterministic DOB rule's
+contract (a birth/death/personal-event cue). Presidio is also very slow on long
+documents (one transformer pass per LINE): a 108-page return took >45 minutes with
+it installed and ~2-4 minutes without. It is optional and not shipped.
+
+## Output-level scoring is the accuracy measure
+
+`benchmark/run_forms_benchmark.py` runs the real CLI and scores the WRITTEN file word
+by word against geometric truth (`benchmark/output_scoring.py`). A detection that never
+became a redaction, a box that erased a label, and a value missed on page 7 all count.
+`--app-root` scores any other checkout for a baseline. Run it before claiming an
+accuracy change works; a candidate-text benchmark cannot see collateral damage.
+
+`buildtools/qa_run.py` produces QA outputs for real documents with an independent
+verification and writes only sanitized results (no values, no snippets). Its
+`_private_mappings` folder (the pseudonym workbook) holds originals - never ship it.

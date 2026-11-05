@@ -233,10 +233,14 @@ def _implausible_person(text: str) -> bool:
     """
     from .heuristics import FORM_VOCABULARY, looks_like_person
 
+    from .groups import is_placeholder_value
+
     stripped = text.strip()
     tokens = [t.lower().strip(".,") for t in stripped.split()]
     if not tokens or len(stripped) < 2:
         return True
+    if is_placeholder_value(stripped):
+        return True  # "Self-Prepared", "N/A" - the model called it a person
     if any(t in PERSON_STOPWORDS or t in FORM_VOCABULARY for t in tokens):
         return True
     if all(t.isdigit() for t in tokens):

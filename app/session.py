@@ -232,6 +232,24 @@ class AnonymizationSession:
                     f"{refused} second-pass finding(s) were form text, labels or figures "
                     "and were discarded - these are never redacted"
                 )
+        if added and getattr(self.detection, "form_styles", None):
+            # Same rule as the main pass: a name-shaped phrase set in the form's
+            # own typeface is the form talking. The scratch document the second
+            # pass reads has no typeface information, so it is applied here, on
+            # the finding's real source line.
+            from .detection.layout_style import veto_form_styled_proposals
+
+            added, _styled = veto_form_styled_proposals(added, self.detection.form_styles)
+        if added:
+            from .detection.engine import (_drop_bare_states, _drop_implausible_model_hits,
+                                           _drop_numberless_model_streets)
+
+            from .detection.engine import drop_form_words
+
+            vocabulary = getattr(self.detection, "form_vocabulary", set())
+            added = drop_form_words(_drop_implausible_model_hits(
+                _drop_numberless_model_streets(_drop_bare_states(added)), vocabulary,
+            ), vocabulary)
         if added:
             self.detection.candidates.extend(added)
             self.decisions.register(added)

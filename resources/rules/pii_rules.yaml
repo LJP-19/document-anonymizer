@@ -82,7 +82,11 @@ rules:
 
   - name: phone_us
     type: PHONE
-    pattern: '(?<![\d\-])(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}(?![\d])'
+    # "(510)555-0142" - no separator after the bracketed area code - is how tax
+    # software prints a phone number, and the old pattern required one, so every
+    # phone on a software-prepared return was missed. A bare 3-digit area code
+    # still needs its separator, or any 10-digit run would match.
+    pattern: '(?<![\d\-])(?:\+?1[\s.\-]?)?(?:\(\d{3}\)[\s.\-]?|\d{3}[\s.\-])\d{3}[\s.\-]\d{4}(?![\d])'
     confidence: 0.9
     money_guard: true
 
@@ -147,7 +151,11 @@ rules:
     # The comma is now OPTIONAL. Many real mailing blocks - IRS notices
     # among them - condense "CINCINNATI OH 45280-2502" with no comma at all;
     # the original pattern required one and missed every address like it.
-    pattern: '\b[A-Z][A-Za-z.\- ]{1,28},?\s+(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\.?(?:\s+\d{5}(?:-\d{4})?)?\b'
+    # Without a comma the ZIP is REQUIRED. "D Employer ID" and "Schedule CA" -
+    # a word followed by a code that happens to be a state (ID = Idaho) - matched
+    # the comma-optional pattern and were redacted as addresses on real returns.
+    # "CINCINNATI OH 45280-2502" (no comma, with ZIP) still matches.
+    pattern: '\b[A-Z][A-Za-z.\- ]{1,28}(?:,\s*(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\.?(?:\s+\d{5}(?:-\d{4})?)?|\s+(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\.?\s+\d{5}(?:-\d{4})?)\b'
     confidence: 0.85
     # State codes must stay ACTUAL capitals. Half of them are common English
     # words (OR, IN, HI, ME, OK...) - case-insensitive here turned "you, or

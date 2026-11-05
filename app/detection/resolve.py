@@ -74,6 +74,15 @@ def veto_by_label_geometry(
         hit = False
         if area > 0:
             for label in labels:
+                # Same PAGE first. Rectangles are page coordinates: without this,
+                # a value was deleted because some label sat at the same x/y on a
+                # DIFFERENT page - measured, a first name on a state form was
+                # vetoed by the word "Important" on page 1. On a long return
+                # nearly every spot is a label on some page, so this silently
+                # removed detections document-wide.
+                label_page = getattr(label.line, "page_no", None)
+                if label_page is not None and label_page != candidate.page_no:
+                    continue
                 if _overlap_area(candidate.rect, label.rect) / area >= SPATIAL_LABEL_OVERLAP_THRESHOLD:
                     hit = True
                     break

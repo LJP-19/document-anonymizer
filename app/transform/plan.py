@@ -93,13 +93,22 @@ def build_plan(
     people = [
         c.normalized for c in detection.candidates if c.pii_type is PiiType.PERSON
     ]
-    if people:
+    import re as _re
+
+    registry.document_words = {
+        w.lower() for c in detection.candidates for w in _re.findall(r"[^\W\d_]{4,}", c.normalized)
+    }
+    if people or registry.document_words:
         from ..pseudonymization.names import NameRegistry
 
         if registry.names is None:
             registry.names = NameRegistry(scope=registry.scope)
         for name in people:
             registry.names.note_original(name)
+        # Any detected value's words, not only people's: a generated surname
+        # must not equal a real city or employer redacted elsewhere either.
+        for word in registry.document_words:
+            registry.names.note_original(word)
 
     unresolved: list = []
 

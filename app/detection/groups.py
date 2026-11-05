@@ -66,6 +66,15 @@ def build_groups(
     label_keys = label_line_keys(labels)
     lines_by_page = {p.number: p.lines_in_reading_order() for p in doc.pages}
 
+    # The form's own typeface, learned from a strict, conservative pre-pass
+    # (column-skipping off). Values set in that typeface are form text: on a
+    # dense government form, letting a label bind the lines below it in its
+    # own column otherwise swallowed instruction lines ("Subtract line 10 from
+    # line 9") as values - measured, typed SSN and PERSON on real returns.
+    from .layout_style import form_styles
+
+    styles = form_styles(labels, _preliminary_groups(labels, lines_by_page, label_keys))
+
     groups: list[LogicalFieldGroup] = []
     extra: list[Candidate] = []
     claimed: set[tuple[int, int, int]] = set()
@@ -80,7 +89,8 @@ def build_groups(
         # field's value, and "Nationality: Brazil" is a second field, not part of it.
         later = [lb.start for lb in labels if lb.line.key() == label.line.key() and lb.start >= label.end]
         value_lines, inline_span = _value_lines_for(
-            label, lines_by_page, label_keys, claimed, limit=min(later) if later else None
+            label, lines_by_page, label_keys, claimed, limit=min(later) if later else None,
+            form_styles=styles,
         )
         if not value_lines and inline_span is None:
             continue
@@ -118,12 +128,52 @@ def _eligible(label, value_text: str) -> bool:
     label only vouches for values that look identity-bearing, so that
     "Filing status: Married filing jointly" survives intact.
     """
+    if is_placeholder_value(value_text):
+        return False
     if not label.unknown:
         return True
     return looks_sensitive(value_text)
 
 
+#: Values a form puts in an identity field that identify nobody. "Self-Prepared"
+#: under "Preparer's name" was typed PERSON and pseudonymised into a fake name,
+#: which changes what the return says (it was NOT paid-prepared).
+PLACEHOLDER_VALUES = {
+    "self-prepared", "self prepared", "self", "n/a", "na", "n.a.", "none", "same", "same as above",
+    "see attached", "see statement", "see stmt", "various", "not applicable", "unknown",
+    "applied for", "-", "--", "—", "x", "xx", "xxx", "on file", "declined", "withheld",
+}
+
+
+def is_placeholder_value(text: str) -> bool:
+    return " ".join(text.lower().split()).strip(" .:;") in PLACEHOLDER_VALUES
+
+
 # -- value line discovery ---------------------------------------------------
+
+
+def _preliminary_groups(labels, lines_by_page, label_keys) -> list[LogicalFieldGroup]:
+    """Conservative label->value pairs, used only to learn the form's typeface."""
+    out = []
+    claimed: set = set()
+    for idx, label in enumerate(labels):
+        if label.non_pii or (not label.expected_types and not label.unknown):
+            continue
+        value_lines, _inline = _value_lines_for(label, lines_by_page, label_keys, claimed, strict=True)
+        if value_lines:
+            out.append(LogicalFieldGroup(group_id=f"p{idx}", label=label, value_lines=value_lines,
+                                         expected_types=list(label.expected_types)))
+    return out
+
+
+def _span_style_at(line: Line, offset: int):
+    pos = 0
+    for span in getattr(line, "spans", []) or []:
+        end = pos + len(span.text)
+        if pos <= offset < end:
+            return (span.font, span.color)
+        pos = end
+    return None
 
 
 def _value_lines_for(
@@ -132,7 +182,12 @@ def _value_lines_for(
     label_keys: set[tuple[int, int, int]],
     claimed: set[tuple[int, int, int]],
     limit: Optional[int] = None,
+    form_styles: Optional[set] = None,
+    strict: bool = False,
 ) -> tuple[list[Line], Optional[tuple[int, int]]]:
+    from .layout_style import line_style
+
+    form_styles = form_styles or set()
     line = label.line
     inline: Optional[tuple[int, int]] = None
 
@@ -147,6 +202,10 @@ def _value_lines_for(
                 end -= 1
         if end > start:
             inline = (start, end)
+            # A remainder set in the form's own typeface is more form text
+            # ("Social security benefits . . 6a  b Taxable amount"), not a value.
+            if form_styles and _span_style_at(line, start) in form_styles:
+                inline = None
 
     # Case B: value(s) stacked underneath the label.
     stacked: list[Line] = []
@@ -158,7 +217,11 @@ def _value_lines_for(
             if other.bbox[1] > line.bbox[1] + 0.4 * max(line.height, 1.0)
         ]
         below.sort(key=lambda ln: (ln.bbox[1], ln.bbox[0]))
-        anchor_left = line.bbox[0]
+        # The label's own horizontal extent, not its line's: a label that is
+        # the second field on its row starts mid-line.
+        label_x0 = label.rect[0] if label.rect else line.bbox[0]
+        label_x1 = label.rect[2] if label.rect else line.bbox[2]
+        anchor_left = label_x0
         prev_bottom = line.bbox[3]
         line_cap = NAME_LIKE_MAX_LINES.get(
             label.expected_types[0] if len(label.expected_types) == 1 else None,
@@ -167,6 +230,21 @@ def _value_lines_for(
         for candidate_line in below:
             if len(stacked) >= line_cap:
                 break
+            # Only lines in THIS label's column are candidates. Lines were walked
+            # in page reading order, so on a row of side-by-side labels ("First
+            # name | Last name | SSN") the first line below the SECOND label was
+            # the FIRST label's value, at the far left; it failed the left-edge
+            # test and ended the search. Every field but the leftmost on such a
+            # row was never bound - measured on real returns, every last-name,
+            # SSN, state and ZIP box. Another column's line is skipped, not fatal.
+            cx0, cx1 = candidate_line.bbox[0], candidate_line.bbox[2]
+            overlaps_label = min(cx1, label_x1) - max(cx0, label_x0) > 1.0
+            if not overlaps_label and abs(cx0 - anchor_left) > LEFT_EDGE_TOLERANCE:
+                if strict:
+                    break
+                continue
+            if form_styles and line_style(candidate_line) in form_styles:
+                break  # the form's own text: this field has ended
             if candidate_line.key() in label_keys or candidate_line.key() in claimed:
                 break
             gap = candidate_line.bbox[1] - prev_bottom
@@ -218,6 +296,21 @@ def _shape_mismatch(text: str, expected: list) -> bool:
         return False
     stripped = text.strip()
     return bool(_ADDRESS_SHAPE.search(stripped) or _STREET_SHAPE.match(stripped))
+
+
+#: Types defined by their digits. A line with no digit cannot be one: "Enter code
+#: from instructions" under an SSN label, "Checking  Savings" under "Type of
+#: account" - measured on real returns, both were typed and redacted.
+_DIGIT_TYPES = {
+    "SSN", "EIN", "ITIN", "TIN", "STATE_TAX_ID", "BANK_ACCOUNT", "ROUTING_NUMBER", "PHONE", "FAX",
+    "POSTAL_CODE", "DOB", "PERSONAL_DATE", "CARD_NUMBER", "MEDICARE_ID", "IP_PIN", "PTIN",
+}
+
+
+def _shape_fits_label(text: str, expected: list) -> bool:
+    if expected and all(t.value in _DIGIT_TYPES for t in expected):
+        return any(ch.isdigit() for ch in text)
+    return True
 
 
 def _is_pure_financial(text: str) -> bool:
@@ -273,6 +366,8 @@ def _cover_span(
 
     rect = line.rect_for(start, end)
     if rect is None:
+        return []
+    if not _shape_fits_label(line.text[start:end], group.expected_types):
         return []
     # The label already says what this field holds. Using it beats reporting
     # UNLABELLED, which is what made the review list unreadable.

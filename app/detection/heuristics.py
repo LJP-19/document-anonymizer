@@ -58,6 +58,15 @@ FORM_VOCABULARY = {
     "corporation", "company", "inc", "llc", "llp", "ltd", "trust", "estate",
     "partnership", "bank", "national", "association", "federal", "united",
     "states", "america",
+    # Institutions and form furniture. "Northwind Community Clinic" and
+    # "Presidential Election Campaign" are name-SHAPED; a person's name never
+    # contains these words.
+    "clinic", "hospital", "center", "centre", "university", "college", "school",
+    "church", "foundation", "institute", "agency", "office", "services", "county",
+    "district", "authority", "board", "commission", "committee", "council",
+    "campaign", "election", "presidential", "fund", "program", "programme",
+    "insurance", "health", "medical", "community", "society",
+    "report", "worksheet", "instructions", "election", "only", "use",
 }
 
 # ---------------------------------------------------------------------------

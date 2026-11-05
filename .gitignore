@@ -13,3 +13,6 @@ out/
 resources/models/
 
 benchmark/_scratch/
+
+# QA outputs and working copies of diagnostic documents - never commit
+qa_outputs/

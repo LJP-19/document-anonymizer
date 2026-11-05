@@ -51,6 +51,30 @@ def _buried(cleaned: str, match) -> bool:
     return len(cleaned.split()) > 4 and len(cleaned[: match.start()].split()) > 2
 
 
+#: A place NAME ending in a label word: "Lakeside City", "SALT LAKE CITY", "Jersey City".
+_PLACE_NAME = re.compile(r"^(?:[^\W\d_][\w.'’\-]*\s+){1,3}(?:city|town)\.?$", re.I)
+
+
+def _is_place_name(cleaned: str) -> bool:
+    """True for a city value that merely ENDS in "City"/"Town".
+
+    The address label pattern matched the word "CITY" inside the value "UNION
+    CITY", made the value a protected label, and the city was never redacted -
+    on every page it appeared. A real label LEADS with its word ("City, town or
+    post office") or is the word alone; a place name has its own words first.
+    The words before it must not be form vocabulary, so "Your city" and
+    "Home town" stay labels.
+    """
+    if not _PLACE_NAME.match(cleaned):
+        return False
+    from .heuristics import FORM_VOCABULARY
+
+    words = [w.strip(".,'’").lower() for w in cleaned.split()[:-1]]
+    modifiers = FORM_VOCABULARY | {"your", "my", "his", "her", "their", "spouse's", "mailing", "current",
+                                   "previous", "birth", "resident", "residence", "foreign"}
+    return not any(w in modifiers for w in words)
+
+
 def _match_label(text: str, rs: RuleSet) -> Optional[tuple[list[PiiType], bool, bool]]:
     """Returns (expected_types, is_non_pii, is_unknown), or None if not a label."""
     cleaned = _clean(text)
@@ -66,10 +90,17 @@ def _match_label(text: str, rs: RuleSet) -> Optional[tuple[list[PiiType], bool, 
         # Require a substantial match so that a stray "name" inside unrelated
         # prose does not turn the whole line into a field label.
         if m and len(m.group().strip()) >= 3 and not _buried(cleaned, m):
-            span = len(m.group().strip())
+            # English labels put the head noun LAST: "Spouse's/RDP's DOB" is a
+            # date of birth, "Taxpayer SSN" an SSN. Ranking by match length
+            # alone made the role word win ("spouse" is longer than "dob"), so
+            # a DOB column was typed PERSON. Rank by where the match ENDS, then
+            # by length.
+            span = (m.end(), len(m.group().strip()))
             if best is None or span > best[1]:
                 best = (list(rule.expects), span)
     if best is not None:
+        if _is_place_name(cleaned):
+            return None
         return best[0], False, False
     # Unrecognised but label-shaped. Real forms are full of these; refusing to
     # bind their values is the main source of missed PII. The values themselves

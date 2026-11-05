@@ -34,6 +34,18 @@ INSTRUCTION = re.compile(
     re.I,
 )
 
+#: Lines naming a public body. The lines printed under one are where to MAIL
+#: something - "Internal Revenue Service / PO BOX 802502 / CINCINNATI OH
+#: 45280-2502" - not where anyone lives. Every line of that block was being
+#: redacted as a home address, on every voucher page of a return.
+AGENCY = re.compile(
+    r"\b(internal revenue service|department of (the )?treasury|franchise tax board|"
+    r"department of revenue|department of taxation|social security administration|"
+    r"united states treasury|comptroller of|tax commission|employment development department)\b",
+    re.I,
+)
+AGENCY_BLOCK_LINES = 4
+
 #: A line appearing on at least this many pages at the same height is chrome.
 REPEAT_PAGES = 3
 POSITION_TOLERANCE = 6.0
@@ -93,6 +105,21 @@ def detect_form_text(
     # PII, not a running header - and it usually has no binding label at all,
     # so the group-only exemption above missed exactly this shape.
     for candidate in candidates or []:
+        # A MODEL's guess alone does not make a line a value line: a software
+        # footer ("REV 04/01/22 <product>") repeated on 30 pages was exempted
+        # because spaCy tagged one word of it PERSON. Rules, labels, the
+        # shape/joint-name detectors and propagation still exempt a line -
+        # and a confirmed subject's name on a repeated header is re-found by
+        # propagation afterwards, which this veto never touches.
+        from .types import Source
+
+        if candidate.source is Source.NER and candidate.group_id is None:
+            from .heuristics import looks_like_person
+
+            # ...unless the line itself reads as a name: a person printed in a
+            # fixed header spot on every page is repeated, and still a person.
+            if not looks_like_person(candidate.line.text)[0]:
+                continue
         pii_value_lines.add(candidate.line.key())
 
     # Repeated running text: the same words in the same place on several pages.
@@ -119,6 +146,17 @@ def detect_form_text(
                 continue
             if INSTRUCTION.search(line.text):
                 found.add(line, "form instruction")
+
+    for page in doc.pages:
+        ordered = page.lines_in_reading_order()
+        for i, line in enumerate(ordered):
+            if not AGENCY.search(line.text):
+                continue
+            found.add(line, "public body")
+            block = [o for o in ordered[i + 1:] if abs(o.bbox[0] - line.bbox[0]) <= 14.0
+                     and 0 <= o.bbox[1] - line.bbox[1] <= 16.0 * AGENCY_BLOCK_LINES]
+            for other in block[:AGENCY_BLOCK_LINES]:
+                found.add(other, "public body's mailing address")
 
     for label in labels or []:
         # A label occupying its whole line is form text; one sharing a line with

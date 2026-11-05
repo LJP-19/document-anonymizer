@@ -114,11 +114,30 @@ def generate(pii_type: PiiType, value: str, scope: str = "document") -> str:
         return _fit_length([fake.city() for _ in range(6)], target)
 
     if pii_type is PiiType.ADDRESS:
-        if re.search(r",\s*[A-Z]{2}", value):
-            zip_part = re.search(r"\d{5}(?:-\d{4})?", value)
-            base = f"{fake.city()}, {fake.random_element(_STATE_CODES)}"
-            return f"{base} {fake.postcode()}" if zip_part else base
-        return _fit_length([fake.street_address() for _ in range(5)], target)
+        from ..detection.entities_pass import _STATE_CODES as _ALL_STATE_CODES
+
+        # Same KIND of address as the original. A city on its own ("UNION
+        # CITY") or a city/state/ZIP line written without a comma, as tax
+        # software prints it ("LAKESIDE CITY CA 94621"), used to get a STREET
+        # address - a replacement of the wrong kind, in the wrong case.
+        stripped = value.strip()
+        upper = stripped.isupper()
+        csz = re.match(r"^(?P<city>[^\d,]+?),?\s+(?P<st>[A-Z]{2})\.?(?:\s+(?P<zip>\d{5}(?:-\d{4})?))?$", stripped)
+        if re.search(r",\s*[A-Z]{2}", stripped) or (csz and csz.group("st").lower() in _ALL_STATE_CODES):
+            zip_part = re.search(r"\d{5}(?:-\d{4})?", stripped)
+            sep = ", " if "," in stripped else " "
+            base = f"{fake.city()}{sep}{fake.random_element(_STATE_CODES)}"
+            if zip_part:
+                plus4 = f"-{fake.numerify('####')}" if "-" in zip_part.group() else ""
+                out = f"{base} {fake.postcode()}{plus4}"
+            else:
+                out = base
+            return out.upper() if upper else out
+        if not any(ch.isdigit() for ch in stripped):
+            out = _fit_length([fake.city() for _ in range(6)], target)
+            return out.upper() if upper else out
+        out = _fit_length([fake.street_address() for _ in range(5)], target)
+        return out.upper() if upper else out
 
     if pii_type is PiiType.POSTAL_CODE:
         return fake.postcode() if len(value) <= 5 else f"{fake.postcode()}-{fake.numerify('####')}"
