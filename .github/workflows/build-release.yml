@@ -24,6 +24,10 @@ on:
         description: "Optional: fail unless app/version.py says exactly this (e.g. 0.42.0)"
         type: string
         default: ""
+      skip_tests:
+        description: "Skip the test suites (build installers only). Tag releases are always tested."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -74,6 +78,7 @@ jobs:
   test:
     name: Tests (Linux)
     needs: version
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.skip_tests) }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -141,6 +146,7 @@ jobs:
   windows:
     name: Windows installer (x64)
     needs: [version, test]
+    if: ${{ always() && needs.version.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
     runs-on: windows-latest
     timeout-minutes: 150
     env:
@@ -185,6 +191,7 @@ jobs:
       - name: Confirm the model is installed before packaging
         run: python -c "import spacy; spacy.require_cpu(); spacy.load('en_core_web_trf'); print('model OK, CPU')"
       - name: Run the regression suite on this runner
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.skip_tests) }}
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest tests -q
@@ -246,6 +253,7 @@ jobs:
   macos:
     name: macOS DMG (Apple Silicon arm64)
     needs: [version, test]
+    if: ${{ always() && needs.version.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
     # macos-14 is Apple Silicon. Intel is not built: torch (pinned in
     # requirements.txt) publishes no macOS x86_64 wheels for this version.
     runs-on: macos-14
@@ -288,6 +296,7 @@ jobs:
       - name: Confirm the model is installed before packaging
         run: python -c "import spacy; spacy.require_cpu(); spacy.load('en_core_web_trf'); print('model OK, CPU')"
       - name: Run the regression suite on this runner
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.skip_tests) }}
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest tests -q
@@ -354,8 +363,11 @@ jobs:
     # Both platform builds must succeed; a tag always releases; a manual run
     # releases only when asked to.
     if: >-
-      github.ref_type == 'tag' ||
-      (github.event_name == 'workflow_dispatch' && inputs.release != 'none')
+      always() &&
+      needs.windows.result == 'success' && needs.macos.result == 'success' &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      (github.ref_type == 'tag' ||
+       (github.event_name == 'workflow_dispatch' && inputs.release != 'none'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
