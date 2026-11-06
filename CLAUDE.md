@@ -2532,3 +2532,19 @@ Tests: `tests/test_pseudonymization_identity.py` (owner's acceptance tests A-J).
   substituted inside tokens that contain digits - the source of scrambled replacements.
 - **Only confirmed PII is applied by default**: the QA runner uses the app's own
   decisions (`buildtools/qa_run.py`; `--accept-all` is opt-in) and reports what was held.
+
+## v0.40.0 final-QA fixes (each found on a real return, each mutation-checked)
+
+- **Seed surname labels first; take only the FIRST word under a given-name label**
+  (`plan._seed_name_roles`). A dependents "(1) First name" column binds the whole
+  "First M Last" line; seeding all of it as given names gave the surname a
+  first-name pseudonym everywhere it stood alone, the output filename included.
+- **An "If ...," lead-in does not bury a label** (`labels._buried`). Form 1040's
+  "If joint return, spouse's first name and middle initial" had no label, so the
+  spouse's first name rested on a model guess and the production model missed it.
+- **House numbers keep their digit count** (`generator._match_house_number`): no
+  "4049" -> "08148".
+- **A name-shaped model "street" is retyped, not dropped**
+  (`engine._drop_numberless_model_streets`). en_core_web_trf tags some unlabelled
+  names beside an address as STREET; dropping them failed test_unicode_names on the
+  CI model while the dev model passed - run the suite on trf before claiming green.
