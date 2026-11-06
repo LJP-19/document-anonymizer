@@ -2573,3 +2573,53 @@ Tests: `tests/test_false_positive_regressions.py`; benchmark: `python -m benchma
   value, a non-label value, >=2 alphanumerics and no symbol-font glyph - each guard is a real FP.
 - Strict scoring for real inputs that earlier versions processed: inherited red text is EXCLUDED
   and counted separately; counting it as PII hid exactly the damage the owner saw.
+
+## 0.42.0: ONE fail-closed authorization policy (owner's rule - do not weaken)
+
+Report: `docs/ROOT_CAUSE_AUTHORIZATION.md`. Tests: `tests/test_authorization.py`.
+Mutation check: `qa_outputs/tools/mutation_p4.py` (private) - removing any safeguard
+below fails tests.
+
+- `app/decisions/authorization.py::assess()` is the ONLY place that decides whether a
+  candidate may be transformed without a person. Never re-implement it elsewhere.
+  Auto-approval needs: a VERIFIED typed label (`label_confirmed`), OR a specific
+  identifier whose OWN line names its type before the value plus a passing own-rule
+  validator, OR a reliable occurrence of a label-confirmed entity (propagation
+  "same value as an entity", name control, or only a confirmed person's name words).
+- Absolute vetoes: `needs_review`, `ambiguous`, UNRESOLVED, untyped, ORG_PRIVATE,
+  blackout, own-rule validator failure. PROBABLE vetoes unless the entity rule holds.
+- `label_confirmed` (annotate_label_binding) is NOT "has a group_id": `_cover_span`
+  attaches group ids to anything on a value line. Only a recognised, typed (not non-PII, not unknown)
+  label that expects the type binds. A verified label may clear only a DETECTOR'S doubt
+  about its own type/score (`LABEL_RESOLVABLE_DOUBTS`) - never an AI objection,
+  validator failure, ambiguity or soft-protection conflict.
+- A rule's context list (e.g. "taxpayer") finds values; it does not authorize them.
+  "Taxpayer name:" above "Reference 573918204" made an SSN once.
+- `DecisionManager.register` is fail-closed; every Decision records `origin`
+  (AUTO_APPROVED / REVIEW_REQUIRED / USER_*) and a reason. `set_state` = a person.
+- `build_plan` re-assesses every AUTO approval, refuses anything without authorization
+  (`plan.refused`), tags `Target.authorized_by` and writes `plan.authorization_log`
+  (no text). `apply_plan` raises `UnauthorizedTargetError` for an untagged target.
+- Bulk paths (`--accept-all`, `Batch.redact_everything`, "Redact everything") call
+  `approve_auto_eligible` only. `apply_to_all`/`apply_to_entity` never approve an
+  ambiguous occurrence. An explicit manual "apply to the same" approves its
+  evidence-linked full forms (`_entity_variants`).
+- `us_zip` and `ssn_plain_unlabelled` are `review_unless_context`; a shape-only loser
+  does not create a "detectors disagree" flag (`resolve._absorb`).
+
+## Releases are built ONLY by GitHub Actions (0.42.0)
+
+`RELEASE_GUIDE.md` is the operator guide. `.github/workflows/build-release.yml`:
+version check (tag must equal `app/version.py`) -> Linux tests + FP benchmark (zero) ->
+Windows (Inno Setup `installer/DocumentAnonymizer.iss`, silent install + installed-app
+self-test + uninstall) and macOS arm64 (`installer/macos/sign_and_package.sh`: signs and
+notarizes only with ALL six APPLE_* secrets, otherwise an `-UNSIGNED.dmg`; DMG mounted
+and the copied app self-tested) -> release job (needs all; checksums verified,
+`SHA256SUMS.txt`, `build-manifest.json`, notes; `gh release create`, never overwrites).
+- A `--windowed` exe must be run with `Start-Process -Wait -PassThru` in PowerShell, or
+  its exit code is never seen.
+- Intel macOS is not built: the pinned torch has no macOS x86_64 wheel. Do not advertise it.
+- Ordinary pushes do not build. `workflow_dispatch` needs the workflow on the default
+  branch to appear in the UI; a tag push runs the workflow file of the tagged commit.
+- Icons are generated in `build.py` via `make_icon.py` (PyMuPDF rasterizes the SVG,
+  Pillow writes .ico/.icns); generated files are git-ignored.

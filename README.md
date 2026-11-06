@@ -14,6 +14,12 @@ tool or an outside vendor.
 
 ## Status
 
+**0.42.0**: fail-closed authorization. One policy (`app/decisions/authorization.py`)
+decides what may be pseudonymized without a person; everything uncertain is listed for
+review and left readable until you press Redact, Keep or Edit, and the check is repeated
+at the transformation boundary. Installers are built only by GitHub Actions - see
+[RELEASE_GUIDE.md](RELEASE_GUIDE.md).
+
 **0.41.0**: strict PII-only - only confirmed PII is pseudonymized automatically. A model or
 pattern guess is applied only when a field label, a table column header or a label-confirmed person
 backs it up; anything else is listed for review and left readable. Text this app already replaced

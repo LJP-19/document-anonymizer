@@ -34,27 +34,40 @@ def write_svg() -> Path:
     return path
 
 
-def write_rasters() -> list[Path]:
-    """PNG/ICO/ICNS for the packaged app. Requires Pillow + cairosvg if present."""
-    written: list[Path] = []
+def _render_png(size: int, target: Path) -> None:
+    """Rasterize the SVG. PyMuPDF (already a runtime dependency) renders SVG with
+    no system libraries, so this works on every CI runner; cairosvg is used only
+    if PyMuPDF is unavailable."""
     try:
-        import cairosvg
+        import pymupdf
+
+        doc = pymupdf.open(stream=SVG.encode(), filetype="svg")
+        page = doc[0]
+        zoom = size / max(page.rect.width, page.rect.height)
+        page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=True).save(str(target))
+        doc.close()
     except ImportError:
-        return written
+        import cairosvg
+
+        cairosvg.svg2png(bytestring=SVG.encode(), write_to=str(target), output_width=size, output_height=size)
+
+
+def write_rasters() -> list[Path]:
+    """PNG sizes, plus app.ico (Windows) and app.icns (macOS) via Pillow."""
+    written: list[Path] = []
     for size in SIZES:
         target = ICON_DIR / f"app-{size}.png"
-        cairosvg.svg2png(bytestring=SVG.encode(), write_to=str(target),
-                         output_width=size, output_height=size)
+        _render_png(size, target)
         written.append(target)
-    try:
-        from PIL import Image
+    from PIL import Image
 
-        images = [Image.open(ICON_DIR / f"app-{s}.png") for s in (16, 32, 48, 64, 128, 256)]
-        ico = ICON_DIR / "app.ico"
-        images[0].save(ico, format="ICO", sizes=[(i.width, i.height) for i in images])
-        written.append(ico)
-    except ImportError:
-        pass
+    ico = ICON_DIR / "app.ico"
+    biggest = Image.open(ICON_DIR / "app-256.png")
+    biggest.save(ico, format="ICO", sizes=[(s, s) for s in (16, 32, 48, 64, 128, 256)])
+    written.append(ico)
+    icns = ICON_DIR / "app.icns"
+    Image.open(ICON_DIR / "app-1024.png").save(icns, format="ICNS")
+    written.append(icns)
     return written
 
 
