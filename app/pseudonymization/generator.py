@@ -129,7 +129,9 @@ def generate(pii_type: PiiType, value: str, scope: str = "document") -> str:
 
     if pii_type in (PiiType.STREET, PiiType.PO_BOX):
         out = _fit_length([fake.street_address() for _ in range(5)], target)
-        return _match_house_number(out, value, fake) if pii_type is PiiType.STREET else out
+        out = _match_house_number(out, value, fake) if pii_type is PiiType.STREET else out
+        letters = [ch for ch in value if ch.isalpha()]
+        return out.upper() if letters and all(ch.isupper() for ch in letters) else out
 
     if pii_type is PiiType.CITY_STATE:
         if "," in value:

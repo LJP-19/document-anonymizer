@@ -112,6 +112,11 @@ class EntityRegistry:
             digits = _re.sub(r"\D", "", text)
             if digits:
                 return EntityKey(pii_type, digits, discriminator)
+        if pii_type in (PiiType.STREET, PiiType.ADDRESS) and _re.match(r"^\s*\d", text or ""):
+            # One street line, one entity: detectors type the same "4817 HARBORVIEW
+            # CMN" STREET on one page and ADDRESS on another, and keying by type
+            # gave the same address two different pseudonyms (0.41.0).
+            return EntityKey(PiiType.ADDRESS, self.normalize(text), discriminator)
         if pii_type is PiiType.ORG_PRIVATE:
             return EntityKey(pii_type, self._org_core(text), discriminator)
         if pii_type is PiiType.PERSON:

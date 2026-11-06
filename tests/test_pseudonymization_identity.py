@@ -397,3 +397,17 @@ def test_I_a_crowded_row_shrinks_on_the_baseline_instead_of_overlapping():
     lonely = NS(rect=(100, 200, 110, 212), origin=(100, 209), replacement="A much longer synthetic value " * 30,
                 font_size=9, font_name="Helvetica", font_flags=0, color=(1, 0, 0))
     assert _insert_at_baseline(page, lonely, [lonely], []) is None
+
+
+def test_F_one_street_line_typed_two_ways_gets_one_pseudonym_in_its_own_case():
+    """A real return typed the same street STREET on its cover letter and ADDRESS on
+    Form 1040; keyed by type, it got two different pseudonyms - and the STREET one
+    lost the original's capitals."""
+    from app.detection.types import PiiType
+    from app.entities.registry import EntityRegistry
+
+    reg = EntityRegistry(scope="t")
+    a = reg.pseudonym_for(PiiType.STREET, "4817 HARBORVIEW CMN")
+    b = reg.pseudonym_for(PiiType.ADDRESS, "4817 HARBORVIEW CMN")
+    assert a == b
+    assert a == a.upper()
