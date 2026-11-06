@@ -53,14 +53,15 @@ def geometric_labeller(items):
     return label
 
 
-def run_app(app_root: Path, src: str, out: str, env_extra: dict | None = None) -> tuple[int, float, str]:
+def run_app(app_root: Path, src: str, out: str, env_extra: dict | None = None,
+            accept_all: bool = True) -> tuple[int, float, str]:
     env = dict(os.environ)
     env.setdefault("DOCANON_LLM", "0")
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
     env.update(env_extra or {})
     started = time.time()
     proc = subprocess.run(
-        [sys.executable, "-m", "app.cli", "process", src, "--accept-all", "-o", out],
+        [sys.executable, "-m", "app.cli", "process", src, *(["--accept-all"] if accept_all else []), "-o", out],
         cwd=str(app_root), env=env, capture_output=True, text=True,
     )
     return proc.returncode, time.time() - started, proc.stdout[-4000:] + proc.stderr[-2000:]
@@ -72,6 +73,8 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default=str(ROOT / "build" / "forms_benchmark"))
     ap.add_argument("--json")
     ap.add_argument("--only", nargs="*")
+    ap.add_argument("--default-decisions", action="store_true",
+                    help="use the app's own default decisions (held items stay unapplied) instead of --accept-all")
     args = ap.parse_args(argv)
 
     out_dir = Path(args.out).resolve()
@@ -82,7 +85,7 @@ def main(argv=None) -> int:
         if args.only and name not in args.only:
             continue
         out_pdf = str(out_dir / f"{name}.out.pdf")
-        code, secs, log = run_app(Path(args.app_root), path, out_pdf)
+        code, secs, log = run_app(Path(args.app_root), path, out_pdf, accept_all=not args.default_decisions)
         if not Path(out_pdf).exists():
             results[name] = {"error": f"no output (exit {code})", "log": log[-1500:]}
             print(f"{name}: NO OUTPUT (exit {code})")
