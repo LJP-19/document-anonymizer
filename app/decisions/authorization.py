@@ -93,7 +93,18 @@ LABEL_RESOLVABLE_DOUBTS = (
     # the winner's type settles it ("Account Number: 123456789" - bank account,
     # not the SSN its shape also fits).
     "detectors disagree:",
+    # A note about the field GROUP (another expected type was not found in it),
+    # not doubt about this value: holding the confirmed value protects nothing.
+    "partial / incomplete detection",
 )
+
+#: Soft protection (a line that repeats on every page, static boilerplate) is a
+#: structural GUESS. An EXACT occurrence of an entity a label confirmed outranks it:
+#: a filer's name printed in every page header is still the filer's name. Hard
+#: protection (labels, figures, prior replacements) is never overridden - the gate
+#: rejects those candidates outright.
+SOFT_PROTECTION_DOUBTS = ("sits on running header text", "sits on running footer text",
+                          "sits on static boilerplate text", "sits on form instruction text")
 
 
 def _only_detector_doubt(reason: str) -> bool:
@@ -217,8 +228,12 @@ def assess(c: Candidate, confirmed_words: Optional[set] = None) -> Assessment:
     if c.source is Source.MANUAL:
         return Assessment(True, "added by the user")
     if c.needs_review:
-        why = (c.review_reason or "flagged for review").strip()
-        return Assessment(False, f"flagged for review: {why}")
+        exact_entity = (c.source is Source.COVERAGE and not getattr(c, "ambiguous", False)
+                        and any(e.detail.startswith("same value as an entity") for e in c.evidence))
+        parts = [p.strip().lower() for p in (c.review_reason or "").split(";") if p.strip()]
+        if not (exact_entity and parts and all(p.startswith(SOFT_PROTECTION_DOUBTS) for p in parts)):
+            why = (c.review_reason or "flagged for review").strip()
+            return Assessment(False, f"flagged for review: {why}")
     if getattr(c, "ambiguous", False):
         return Assessment(False, "the context leaves it unclear whose this is")
     if getattr(c, "blackout", False):

@@ -326,3 +326,18 @@ def test_reopening_a_processed_pdf_does_not_redetect_the_pseudonyms(tmp_path):
     again.analyse()
     replaced = {t.replacement for t in s.plan().targets}
     assert not any(again.decisions.is_actionable(c) and c.text in replaced for c in again.candidates)
+
+
+def test_an_exact_confirmed_entity_outranks_soft_repetition_but_nothing_weaker_does():
+    """A filer's name printed in every page header is soft-protected as 'repeats on
+    every page'. An EXACT occurrence of the label-confirmed entity is still the filer;
+    an alias or a model guess sitting there is not authorized by that rule."""
+    reason = "sits on running header text - check it is really identity"
+    exact = cand(source=Source.COVERAGE, evidence=["same value as an entity named in a subject field"],
+                 needs_review=True, review_reason=reason)
+    assert assess(exact).eligible
+    guess = cand(source=Source.NER, evidence=["spaCy PERSON"], needs_review=True, review_reason=reason)
+    assert not assess(guess, {"torvin", "quell"}).eligible
+    alias = cand("Quell", source=Source.COVERAGE, evidence=["same value as an entity named in a subject field"],
+                 needs_review=True, review_reason=reason + "; may be an unrelated person", ambiguous=True)
+    assert not assess(alias).eligible
