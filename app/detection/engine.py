@@ -325,6 +325,8 @@ def _drop_numberless_model_streets(candidates: list) -> list:
     airport) is mapped to STREET, so "Jordan River Trail" in a sentence was
     redacted as somebody's address. A model-only STREET with no digit, not bound
     by a field label, is a public place and is dropped."""
+    from .heuristics import looks_like_person
+
     kept = []
     for c in candidates:
         if (c.pii_type is PiiType.STREET and c.source in (Source.NER, Source.COVERAGE) and c.group_id is None
@@ -333,7 +335,8 @@ def _drop_numberless_model_streets(candidates: list) -> list:
             continue
         if (c.pii_type is PiiType.STREET and c.source in (Source.NER, Source.COVERAGE) and c.group_id is None
                 and not re.match(r"^\d{1,6}\s", c.text.strip())
-                and not any(w.strip(".,()").lower() in _STREET_WORDS for w in c.text.split())):
+                and not any(w.strip(".,()").lower() in _STREET_WORDS for w in c.text.split())
+                and not looks_like_person(c.text.strip())[0]):
             continue  # a model "street" with no street word ("(540NR),") is not an address
         # A name-shaped "place" with no street word ("İpek Yılmaz" tagged FAC
         # beside "Main Street 4") is left for _retype_name_shaped_places, which
