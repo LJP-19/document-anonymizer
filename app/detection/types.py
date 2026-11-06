@@ -132,6 +132,11 @@ class Candidate:
     #: unset, which is treated as CONFIRMED by every reader for backward
     #: compatibility.
     adjudication: str = ""
+    #: A name component that matches a registered person but whose context
+    #: says it may be someone or something else ("Corin River Trail", "Bob Tash"
+    #: when only "Ann Tash" is registered). Reported for review, never applied
+    #: automatically (decisions/manager.py).
+    ambiguous: bool = False
 
     @property
     def id(self) -> str:

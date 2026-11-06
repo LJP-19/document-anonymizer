@@ -121,6 +121,24 @@ class Line:
     def height(self) -> float:
         return self.bbox[3] - self.bbox[1]
 
+    def span_at(self, start: int, end: Optional[int] = None) -> Optional[Span]:
+        """The span holding text[start:end] - the VALUE's own style.
+
+        A line can carry a 7pt caption and a 10pt Courier value; the line-level
+        properties (first span's font, largest size) describe neither reliably.
+        """
+        end = len(self.text) if end is None else end
+        char = next((c for c in self.offsets[start:end] if c is not None), None)
+        if char is None or not self.spans:
+            return self.spans[0] if self.spans else None
+        cx = (char.bbox[0] + char.bbox[2]) / 2
+        cy = (char.bbox[1] + char.bbox[3]) / 2
+        for span in self.spans:
+            x0, y0, x1, y1 = span.bbox
+            if x0 - 0.5 <= cx <= x1 + 0.5 and y0 - 0.5 <= cy <= y1 + 0.5:
+                return span
+        return self.spans[0]
+
     def rect_for(self, start: int, end: int) -> Optional[Rect]:
         """Exact rectangle covering text[start:end]."""
         return union(c.bbox for c in self.offsets[start:end] if c is not None)

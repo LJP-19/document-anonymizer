@@ -34,8 +34,19 @@ def _mask_preserving_shape(value: str, rng_seed: int) -> str:
     out = []
     h = hashlib.sha256(str(rng_seed).encode()).digest()
     i = 0
-    for ch in value:
-        if ch.isdigit():
+    # Letters are only identifier characters inside a token that also has
+    # digits ("AB12345"). A token of letters alone is a WORD - a caption caught
+    # inside the span, a code such as "TTMac" - and rewriting it letter by
+    # letter is what produced scrambled replacements ("Udju lj Lborgoifrg") on
+    # real returns. Words are kept verbatim.
+    word_chars: set[int] = set()
+    for m in re.finditer(r"\S+", value):
+        if not any(c.isdigit() for c in m.group()):
+            word_chars.update(range(m.start(), m.end()))
+    for pos, ch in enumerate(value):
+        if pos in word_chars:
+            out.append(ch)
+        elif ch.isdigit():
             out.append(digits[h[i % len(h)] % 10])
             i += 1
         elif ch.isalpha():

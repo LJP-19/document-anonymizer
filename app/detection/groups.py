@@ -189,7 +189,7 @@ def _value_lines_for(
     form_styles: Optional[set] = None,
     strict: bool = False,
 ) -> tuple[list[Line], Optional[tuple[int, int]]]:
-    from .layout_style import line_style
+    from .layout_style import in_form_style, line_style
 
     form_styles = form_styles or set()
     line = label.line
@@ -208,7 +208,11 @@ def _value_lines_for(
             inline = (start, end)
             # A remainder set in the form's own typeface is more form text
             # ("Social security benefits . . 6a  b Taxable amount"), not a value.
-            if form_styles and _span_style_at(line, start) in form_styles:
+            style = _span_style_at(line, start)
+            if form_styles and style is not None and (
+                style in form_styles
+                or (style[0].split("-")[0], style[1]) in {(f.split("-")[0], c) for f, c in form_styles}
+            ):
                 inline = None
 
     # Case B: value(s) stacked underneath the label.
@@ -247,7 +251,7 @@ def _value_lines_for(
                 if strict:
                     break
                 continue
-            if form_styles and line_style(candidate_line) in form_styles:
+            if form_styles and in_form_style(candidate_line, form_styles):
                 break  # the form's own text: this field has ended
             if _OWN_LABEL.match(candidate_line.text):
                 # "- Date of Withdrawal:  04/11/2022" under "- Routing Transit

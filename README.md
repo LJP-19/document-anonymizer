@@ -14,6 +14,16 @@ tool or an outside vendor.
 
 ## Status
 
+**0.40.0**: one person, one synthetic identity. Name roles (given/surname) are learned
+from labels and full names before any pseudonym is generated; lone first names and
+surnames are replaced consistently when their context confirms them and held for review
+when it does not; joint filers stay separate people in order; possessives and titles are
+kept. Replacements stay red, written on the original baseline in the value's own font and
+size; removal is per glyph so labels beside a value survive. Output filenames keep their
+structure with only confirmed names replaced (no suffix). Mapping workbooks are written to
+a private per-user folder (`~/.document-anonymizer/mappings`, owner-only); delete that
+folder to remove them.
+
 **0.39.0**: accuracy audit against real, software-prepared multi-page tax returns.
 Form fields are now bound by column (every box on a row, not only the leftmost);
 form text is recognised by its typeset style; short (2-3 letter) surnames, scanline

@@ -34,6 +34,10 @@ class Target:
     group_id: Optional[str] = None
     state: DecisionState = DecisionState.ACCEPTED
     blackout: bool = False
+    #: The value's own glyph boxes. The redactor removes one small rectangle at
+    #: the centre of each, so a neighbour whose box overlaps the value's is not
+    #: taken with it (PyMuPDF removes every character a rectangle touches).
+    char_rects: list = field(default_factory=list)
 
 
 @dataclass
@@ -69,6 +73,61 @@ class TransformationPlan:
 
     def targets_for_page(self, page_no: int) -> list[Target]:
         return [t for t in self.targets if t.page_no == page_no]
+
+
+def _char_rects(candidate) -> list:
+    line = candidate.line
+    offsets = getattr(line, "offsets", None) or []
+    out = []
+    for i in range(candidate.start, min(candidate.end, len(offsets))):
+        ch = offsets[i]
+        if ch is not None and not line.text[i].isspace():
+            out.append(tuple(ch.bbox))
+    return out
+
+
+def _style(candidate):
+    """(size, font, flags, baseline origin) of the span the value sits in."""
+    line = candidate.line
+    span = line.span_at(candidate.start, candidate.end) if hasattr(line, "span_at") else None
+    if span is None:
+        return line.size, line.font, line.flags, line.origin
+    origin = span.origin
+    if origin is not None:
+        origin = (candidate.rect[0], origin[1])   # the value's own x, the span's baseline
+    return span.size, span.font, span.flags, origin
+
+
+def _seed_name_roles(names, detection) -> None:
+    """Teach the name registry which tokens are given names and which are
+    surnames BEFORE any replacement is generated.
+
+    Order: (1) field labels ("first name" / "last name"), the strongest
+    evidence; (2) full names, longest first, which fix both roles at once. A
+    token's role, once fixed, is used wherever it appears alone - so "Ann" alone
+    becomes the same synthetic first name as in "Ann Tash", never a surname.
+    """
+    import re
+
+    given_re = re.compile(r"\b(first|given|forename)\b", re.I)
+    surname_re = re.compile(r"\b(last|sur|family)\s*name\b|\bsurname\b", re.I)
+    by_group = {g.group_id: g for g in getattr(detection, "groups", []) or []}
+    persons = [c for c in detection.candidates if c.pii_type is PiiType.PERSON]
+    for c in persons:
+        group = by_group.get(c.group_id) if c.group_id else None
+        if group is None:
+            continue
+        label = group.label.text
+        tokens = [t for t in c.normalized.split() if t.strip(".,").isalpha() and len(t.strip(".,")) > 1]
+        if surname_re.search(label) and len(tokens) == 1:
+            names.seed_role(tokens[0], surname=True)
+        elif given_re.search(label) and tokens:
+            for t in tokens:
+                names.seed_role(t, surname=False)
+    multi = sorted({c.normalized for c in persons if len(c.normalized.split()) >= 2},
+                   key=lambda v: (-len(v.split()), v))
+    for value in multi:
+        names.seed_full_name(value)
 
 
 def build_plan(
@@ -109,6 +168,7 @@ def build_plan(
         # must not equal a real city or employer redacted elsewhere either.
         for word in registry.document_words:
             registry.names.note_original(word)
+        _seed_name_roles(registry.names, detection)
 
     unresolved: list = []
 
@@ -160,10 +220,11 @@ def build_plan(
             rect=candidate.rect,
             original=candidate.text,
             replacement=replacement,
-            font_size=candidate.line.size,
-            font_name=candidate.line.font,
-            font_flags=candidate.line.flags,
-            origin=candidate.line.origin,
+            font_size=_style(candidate)[0],
+            font_name=_style(candidate)[1],
+            font_flags=_style(candidate)[2],
+            origin=_style(candidate)[3],
+            char_rects=_char_rects(candidate),
             pii_type=candidate.pii_type,
             group_id=candidate.group_id,
             state=state,

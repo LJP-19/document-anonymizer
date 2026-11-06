@@ -244,7 +244,7 @@ class Batch:
 
     def output_path_for(self, item: BatchItem) -> str:
         session = item.session
-        name = session.safe_output_name() if session else f"{Path(item.source_path).stem}.anonymized.pdf"
+        name = session.safe_output_name() if session else Path(item.source_path).name
         folder = Path(self.output_folder) if self.output_folder else Path(item.source_path).parent
         folder.mkdir(parents=True, exist_ok=True)
         candidate = folder / name

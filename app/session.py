@@ -129,6 +129,9 @@ class AnonymizationSession:
     mapping_file: Optional[str] = None
     hidden: Optional[HiddenContent] = None
     mapping_folder: Optional[str] = None
+    #: Filename words that may be names but never occur as one in the document
+    #: (set by safe_output_name); listed for review, never guessed at.
+    filename_review: list = field(default_factory=list)
 
     def analyse(self, use_ner: bool = True, use_llm: Optional[bool] = None) -> DetectionResult:
         if use_llm is None:
@@ -301,86 +304,70 @@ class AnonymizationSession:
         return render_pages(self.plan(), pages, zoom)
 
     def safe_output_name(self) -> str:
-        """A filename that does not itself leak the client (spec sections 42-50).
+        """The source filename with every CONFIRMED identity in it pseudonymised.
 
-        "Smith John 2025 1040.pdf" would undo the whole exercise the moment the
-        file is emailed, so any detected value appearing in the name is
-        replaced with the SAME pseudonym used inside the document - never a
-        placeholder. A bare first or last name token now maps through the
-        same per-token NameRegistry the document body uses, so "Lance" in a
-        filename becomes whichever given name "Lance" became in the PDF
-        (e.g. "Mark"), not the word "REDACTED": routing a name token to an
-        empty replacement was the actual bug behind that placeholder - it
-        discarded the per-token mapping this project already has for exactly
-        this case and fell back to a generic word instead.
+        Owner's rule (0.40.0): keep the original filename's structure -
+        separators, descriptive words, form numbers, years, extension - and
+        replace only names and values this document has confirmed, with the SAME
+        pseudonyms used inside the document:
 
-        A name-shaped filename token that never appears anywhere in the PDF
-        body at all is also handled (spec section 44: filename PII need not
-        occur inside the document) - it is run through the same name-shape
-        heuristics used on document text, and if it looks like a name, it
-        gets a pseudonym from the same registry, creating a new entity if one
-        does not already exist, so it is at least consistently pseudonymized.
+            "Ann Tash_Bo Tash 1040-Latest.pdf" -> "Joy Smith_Lee Smith 1040-Latest.pdf"
+
+        Nothing is appended ("- Anonymized", ".anonymized") and no token is
+        guessed at: an earlier version also pseudonymised any name-SHAPED word,
+        which turned descriptive words into fake names. A person's name is
+        matched as a whole and component by component through the name
+        registry, so a lone surname in a filename gets the same synthetic
+        surname as in the document. Characters a filesystem refuses are removed
+        from the inserted pseudonyms.
         """
         from pathlib import Path as _Path
 
-        from .detection.heuristics import looks_like_a_lone_surname, looks_like_person
         from .detection.types import PiiType
         from .pseudonymization.names import NameRegistry
 
-        stem = _Path(self.source_path).stem
+        source = _Path(self.source_path)
+        stem, suffix = source.stem, source.suffix or ".pdf"
         if not self.detection or not self.registry:
-            return f"{stem}.anonymized.pdf"
-
+            return f"{stem}{suffix}"
         if self.registry.names is None:
             self.registry.names = NameRegistry(scope=self.registry.scope)
         names = self.registry.names
+        plan = self.plan()   # seeds name roles exactly as the document body did
 
-        replacements: list[tuple[str, str]] = []
-        name_tokens: set[str] = set()
-        for candidate in self.detection.candidates:
-            if not self.decisions.is_actionable(candidate):
+        replacements: dict[str, str] = {}
+        for target in plan.targets:
+            original = " ".join(target.original.split())
+            if not original or not target.replacement:
                 continue
-            original = candidate.normalized
-            if len(original) < 3:
-                continue
-            if candidate.pii_type is PiiType.PERSON:
-                replacements.append((original, names.pseudonym(original)))
-                for token in original.split():
-                    if len(token) >= 2 and token.isalpha():
-                        name_tokens.add(token)
-                        replacements.append((token, names.pseudonym(token)))
-            else:
-                replacements.append(
-                    (original, self.registry.pseudonym_for(candidate.pii_type, original))
-                )
+            replacements.setdefault(original, target.replacement)
+            if target.pii_type is PiiType.PERSON:
+                for token in re.split(r"[\s,&]+", original):
+                    bare = token.strip(".,")
+                    if len(bare) >= 2 and bare.isalpha():
+                        mapped = names.known(bare)
+                        if mapped:
+                            replacements.setdefault(bare, names._match_case(mapped, bare))
 
-        # Filename-only names: a token that looks like a name but was never a
-        # document candidate at all still gets a stable pseudonym, rather
-        # than being left in the clear or blanked.
-        for raw_token in re.findall(r"[A-Za-z]{2,}", stem):
-            if raw_token in name_tokens or raw_token.lower() in {
-                "return", "form", "tax", "anonymized", "final", "draft", "copy",
-                "pdf", "report", "statement", "document", "file", "files",
-                "backup", "documents", "summary", "scan", "export", "print",
-                "letter", "notes", "note", "email", "invoice", "receipt",
-                "records", "record", "data", "info", "information", "revised",
-                "updated", "old", "new", "archive", "signed", "unsigned",
-                "review", "reviewed", "estimate", "worksheet", "attachment",
-                "attachments", "exhibit", "packet", "package", "original",
-            }:
-                continue
-            shaped, _confidence = looks_like_person(raw_token)
-            if not shaped:
-                shaped = looks_like_a_lone_surname(raw_token)
-            if shaped:
-                replacements.append((raw_token, names.pseudonym(raw_token)))
+        # Report, never guess: a name-shaped word that appears ONLY in the
+        # filename is listed for review (owner's rule - replace confirmed
+        # identities only, keep descriptive words such as "Latest" or "Filed").
+        from .detection.heuristics import looks_like_a_lone_surname, looks_like_person
+
+        known = {k.lower() for k in replacements}
+        self.filename_review = [
+            w for w in re.findall(r"[^\W\d_]{2,}", stem)
+            if w.lower() not in known and w[:1].isupper()
+            and (looks_like_person(w)[0] or looks_like_a_lone_surname(w))
+        ]
 
         safe = stem
-        for original, pseudonym in sorted(replacements, key=lambda r: -len(r[0])):
-            pattern = re.compile(rf"(?<![A-Za-z0-9]){re.escape(original)}(?![A-Za-z0-9])", re.I)
-            safe = pattern.sub(pseudonym or "Anonymized", safe)
-        safe = re.sub(r"[_\s-]{2,}", "-", safe).strip("-_ ") or "document"
-        return f"{safe}.anonymized.pdf"
+        for original, pseudonym in sorted(replacements.items(), key=lambda r: -len(r[0])):
+            pattern = re.compile(rf"(?<![^\W_]){re.escape(original)}(?![^\W_])", re.I)
+            clean = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", pseudonym).strip()
+            if clean:
+                safe = pattern.sub(lambda m, c=clean: names._match_case(c, m.group()), safe)
+        return f"{safe}{suffix}"
 
     # -- export + verify ---------------------------------------------------
 

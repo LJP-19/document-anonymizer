@@ -80,10 +80,11 @@ def build_pdf(results: list, metrics: dict, out_pdf: Path) -> None:
     s.append(Paragraph("Before / after accuracy", H2))
     for block in metrics.get("comparisons", []):
         s.append(Paragraph(block["title"], BODY))
-        rows = [["Metric", "Original (v0.38.2)", "Improved", "Change"]]
-        for name, a, b, change in block["rows"]:
-            rows.append([name, a, b, change])
-        s.append(_table(rows, [2.4 * inch, 1.5 * inch, 1.5 * inch, 1.8 * inch]))
+        cols = block.get("columns") or ["Metric", "Original (v0.38.2)", "Improved", "Change"]
+        rows = [cols] + [list(r) for r in block["rows"]]
+        first = 2.0 * inch
+        rest = (7.2 * inch - first) / (len(cols) - 1)
+        s.append(_table(rows, [first] + [rest] * (len(cols) - 1)))
         if block.get("note"):
             s.append(Paragraph(block["note"], SMALL))
         s.append(Spacer(1, 6))
@@ -113,6 +114,38 @@ def build_pdf(results: list, metrics: dict, out_pdf: Path) -> None:
         s.append(Paragraph("Redactions by category: " + ", ".join(f"{k} {v}" for k, v in sorted(cats.items())), SMALL))
         s.append(Spacer(1, 8))
 
+    s.append(Paragraph("Identity, colour and filename checks", H2))
+    rows = [["Document", "Output filename", "Red replacements", "One identity per person",
+             "Joint filers apart", "No boxes/patches", "Filename"]]
+    for r in results:
+        if r.get("status") == "NOT RUN":
+            continue
+        ic = r["independent_checks"]
+        def st(k):
+            v = ic.get(k)
+            return "not run" if v is None else ("PASS" if v["passed"] else "FAIL")
+        rows.append([r["document_id"], r["output_file"], st("replacements_red"), st("one_identity_per_person"),
+                     st("joint_filers_kept_apart"), st("no_boxes_or_patches"), st("filename_pseudonymised")])
+    s.append(_table(rows))
+
+    s.append(Paragraph("Held for review (detected, NOT applied)", H2))
+    s.append(Paragraph(
+        "Only confirmed PII is applied by default. The items below were detected but not confirmed - no type, too "
+        "little evidence, or an ambiguous name component - so they were left readable and listed for a reviewer. "
+        "Only page, category and reason are given; no value is shown.", SMALL))
+    rows = [["Document", "Page", "Category", "Reason"]]
+    for r in results:
+        for h in r.get("held_for_review", []):
+            rows.append([r["document_id"], h["page"], h["category"], h["reason"]])
+    if len(rows) == 1:
+        rows.append(["-", "-", "-", "nothing held"])
+    s.append(_table(rows, [1.0 * inch, 0.6 * inch, 2.2 * inch, 3.4 * inch]))
+
+    if metrics.get("mapping_storage"):
+        s.append(Paragraph("Mapping registry: where it is and how to remove it", H2))
+        for item in metrics["mapping_storage"]:
+            s.append(Paragraph("&bull; " + item, BODY))
+
     s.append(Paragraph("Findings and remaining problems", H2))
     for item in metrics.get("findings", []):
         s.append(Paragraph("&bull; " + item, BODY))
@@ -134,7 +167,11 @@ def main(argv=None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     build_pdf(results, metrics, out / "PII_Redaction_QA_Report.pdf")
     machine = {
-        "report_version": 1,
+        "report_version": 2,
+        "summary": metrics.get("summary", ""),
+        "mapping_storage": metrics.get("mapping_storage", []),
+        "findings": metrics.get("findings", []),
+        "limitations": metrics.get("limitations", []),
         "environment": metrics.get("environment", {}),
         "comparisons": metrics.get("comparisons", []),
         "documents": [

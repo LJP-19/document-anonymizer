@@ -75,7 +75,12 @@ class DecisionManager:
                 continue
             from ..detection.types import PiiType
 
-            if (
+            if getattr(c, "ambiguous", False) and c.source is not Source.MANUAL:
+                # A registered person's name component in a context that may
+                # mean someone or something else. Only confirmed PII is applied
+                # automatically; this waits, listed, for a person to decide.
+                state = DecisionState.SKIPPED
+            elif (
                 c.pii_type is PiiType.UNCLASSIFIED_GROUP_VALUE
                 and c.source is not Source.MANUAL
             ):

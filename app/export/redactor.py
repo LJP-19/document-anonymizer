@@ -68,11 +68,64 @@ def clear_of_neighbours(rect: pymupdf.Rect, target, words) -> pymupdf.Rect:
             continue                      # part of the target itself
         if wx1 <= r.x0 or wx0 >= r.x1 or wy1 <= r.y0 or wy0 >= r.y1:
             continue                      # does not touch the removal box
-        if cy < (t.y0 + t.y1) / 2:        # neighbour above
+        same_row = min(wy1, t.y1) - max(wy0, t.y0) > 0.5 * min(wy1 - wy0, t.height)
+        if same_row:
+            # A neighbour on the SAME row whose box touches ours ("Firm's" 2pt
+            # into a name's box): stop short of it horizontally. The rectangle
+            # still reaches into the target's last/first glyph, which PyMuPDF
+            # then removes whole.
+            min_w = 0.3 * t.width
+            if cx > (t.x0 + t.x1) / 2:
+                r.x1 = max(min(r.x1, wx0 - 0.05), r.x0 + min_w)
+            else:
+                r.x0 = min(max(r.x0, wx1 + 0.05), r.x1 - min_w)
+        elif cy < (t.y0 + t.y1) / 2:      # neighbour above
             r.y0 = min(max(r.y0, wy1 + 0.05), r.y1 - min_h)
         else:                             # neighbour below
             r.y1 = max(min(r.y1, wy0 - 0.05), r.y0 + min_h)
     return r
+
+
+#: Share of each glyph box kept, centred, as its removal rectangle.
+GLYPH_CORE = 0.4
+
+
+def removal_rects(target, words) -> list:
+    """The rectangles handed to add_redact_annot for one target.
+
+    Preferred: one small rectangle at the centre of each of the value's own
+    glyphs. PyMuPDF removes every character a rectangle intersects, so each
+    value glyph is certainly removed, and a neighbouring word is touched only if
+    one of its glyphs covers the very centre of a value glyph. Measured on real
+    returns: a single rectangle per value - even inset and shrunk away from
+    neighbours - either took a touching label word ("Firm's") with it or, when
+    shrunk further, left part of the value behind. Falls back to the single
+    inset rectangle when glyph boxes are unknown.
+    """
+    chars = getattr(target, "char_rects", None) or []
+    if not chars:
+        return [clear_of_neighbours(removal_rect(target.rect), target.rect, words)]
+    out = []
+    t = pymupdf.Rect(target.rect)
+    for x0, y0, x1, y1 in chars:
+        w, h = (x1 - x0), (y1 - y0)
+        dx, dy = w * (1 - GLYPH_CORE) / 2, h * (1 - GLYPH_CORE) / 2
+        r = pymupdf.Rect(x0 + dx, y0 + dy, x1 - dx, y1 - dy)
+        # Lines set tighter than their type size overlap vertically: keep the
+        # core clear of words above and below (never below 30% of the glyph).
+        min_h = 0.3 * h
+        for wx0, wy0, wx1, wy1, *_ in words:
+            cx, cy = (wx0 + wx1) / 2, (wy0 + wy1) / 2
+            if t.x0 <= cx <= t.x1 and t.y0 <= cy <= t.y1:
+                continue
+            if wx1 <= r.x0 or wx0 >= r.x1 or wy1 <= r.y0 or wy0 >= r.y1:
+                continue
+            if cy < (y0 + y1) / 2:
+                r.y0 = min(max(r.y0, wy1 + 0.05), r.y1 - min_h)
+            elif cy > (y0 + y1) / 2:
+                r.y1 = max(min(r.y1, wy0 - 0.05), r.y0 + min_h)
+        out.append(r)
+    return out
 
 
 def removal_rect(rect) -> pymupdf.Rect:
@@ -109,8 +162,8 @@ def apply_plan(plan: TransformationPlan, doc: Optional[pymupdf.Document] = None)
                 # 1. Mark and permanently remove the original content.
                 words = page.get_text("words")
                 for t in targets:
-                    rect = clear_of_neighbours(removal_rect(t.rect), t.rect, words)
-                    page.add_redact_annot(rect, fill=None)
+                    for rect in removal_rects(t, words):
+                        page.add_redact_annot(rect, fill=None)
                     report.redacted += 1
 
                 # Keep images and line art intact so tables and rules survive.
@@ -130,11 +183,15 @@ def apply_plan(plan: TransformationPlan, doc: Optional[pymupdf.Document] = None)
                         )
                         report.inserted += 1
 
-                # 2b. Insert the red replacement text into the cleared area.
+                # 2b. Insert the red replacement text into the cleared area,
+                # on the original baseline where it fits beside what remains.
+                remaining = page.get_text("words")
                 for t in targets:
                     if t.blackout:
                         continue
-                    status = _insert_replacement(page, t, targets)
+                    status = _insert_at_baseline(page, t, targets, remaining)
+                    if status is None:
+                        status = _insert_replacement(page, t, targets)
                     if status == "shrunk":
                         report.shrunk.append(t.candidate_id)
                     elif status == "overflow":
@@ -150,6 +207,51 @@ def apply_plan(plan: TransformationPlan, doc: Optional[pymupdf.Document] = None)
             raise
 
         return pdf, report
+
+
+#: A replacement may shrink to this share of the original size on its own
+#: baseline before the boxed fallback below is used.
+BASELINE_MIN_SCALE = 0.8
+
+
+def _insert_at_baseline(page: pymupdf.Page, target: Target, page_targets: list, words: list) -> Optional[str]:
+    """Write the replacement where the original sat: same x, same baseline,
+    same size (or down to 80%), in red - when it fits before the next word or
+    target on the same row. Returns None to hand over to _insert_replacement.
+
+    Owner's request (0.40.0): replacements should look like a value entered in
+    the field - preserved baseline and alignment, no overlap with neighbouring
+    labels or values. The boxed v0.8.3 logic below stays as the fallback, with
+    its insert_text last resort, exactly as CLAUDE.md requires.
+    """
+    if not target.origin or not target.replacement:
+        return None
+    x0, y0, x1, y1 = target.rect
+    baseline = target.origin[1]
+    if not (y0 - 2 <= baseline <= y1 + 2):
+        return None
+    limit = page.rect.x1 - 2
+    for w in words:
+        wx0, wy0, wx1, wy1 = w[:4]
+        if wx0 >= x1 - 0.5 and wy0 < y1 - 1 and wy1 > y0 + 1:
+            limit = min(limit, wx0 - 2.0)
+    for other in page_targets:
+        if other is target:
+            continue
+        ox0, oy0, ox1, oy1 = other.rect
+        if ox0 >= x1 - 0.5 and oy0 < y1 - 1 and oy1 > y0 + 1:
+            limit = min(limit, ox0 - 2.0)
+    width_available = limit - x0
+    fontname = _safe_font(target.font_name, getattr(target, "font_flags", 0))
+    size = max(target.font_size, MIN_FONT_SIZE)
+    current = size
+    while current >= max(MIN_FONT_SIZE, size * BASELINE_MIN_SCALE) - 1e-6:
+        if pymupdf.get_text_length(target.replacement, fontname=fontname, fontsize=current) <= width_available:
+            page.insert_text((x0, baseline), target.replacement, fontsize=current,
+                             fontname=fontname, color=target.color)
+            return "ok" if current >= size - 0.01 else "shrunk"
+        current -= 0.25
+    return None
 
 
 def _insert_replacement(page: pymupdf.Page, target: Target, page_targets: list) -> str:

@@ -2012,14 +2012,18 @@ def test_a_name_token_in_the_filename_matches_the_document_pseudonym(tmp_path):
     assert "Lance" not in name
 
 
-def test_a_name_only_in_the_filename_still_gets_a_stable_pseudonym(tmp_path):
-    """Spec: filename PII need not also occur inside the PDF body."""
+def test_a_name_only_in_the_filename_is_reported_not_guessed(tmp_path):
+    """Owner's rule (0.40.0) supersedes the earlier filename-only guessing:
+    replace CONFIRMED identities only and keep descriptive words. Guessing by
+    name shape also rewrote words such as "Latest" and "Filed". A filename word
+    that may be a name but never occurs as one in the document is listed for
+    review instead of being silently kept or blindly replaced."""
     path = _lines_pdf(tmp_path / "Backup_Torres_Files.pdf",
                        ["1  Wages ...... $412,890"])
     s = analysed(path)
     name = s.safe_output_name()
-    assert "Torres" not in name
-    assert "Backup" in name and "Files" in name  # non-PII parts preserved
+    assert name == "Backup_Torres_Files.pdf"          # structure and words kept
+    assert "Torres" in s.filename_review                # ...and the risk is reported
 
 
 def test_ordinary_filename_words_are_never_mistaken_for_names(tmp_path):

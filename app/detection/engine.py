@@ -262,6 +262,11 @@ def _dates_beside_identity(doc, candidates: list) -> list:
     return out
 
 
+_LANDMARK_WORDS = {
+    "river", "trail", "park", "lake", "creek", "mountain", "mount", "bridge", "beach", "bay",
+    "island", "airport", "station", "hall", "museum", "forest", "canyon", "falls", "harbor",
+    "harbour", "reservoir", "monument", "memorial", "stadium", "arena", "plaza", "mall",
+}
 _COUNTRIES = {"u.s.", "us", "usa", "u.s.a.", "united states", "united states of america", "america",
               "canada", "mexico", "uk", "u.k.", "united kingdom"}
 
@@ -278,10 +283,17 @@ def _drop_implausible_model_hits(candidates: list, form_words: set = frozenset()
 
     kept = []
     for c in candidates:
+        if c.source is Source.COVERAGE and c.group_id is None and c.pii_type in (PiiType.CITY_STATE, PiiType.STREET):
+            bare = " ".join(c.text.split()).strip(" ,;:").lower()
+            if not any(ch.isdigit() for ch in bare) and any(w.strip(".,") in _LANDMARK_WORDS for w in bare.split()):
+                continue  # a second-pass "place" that is a public landmark
         if c.source is Source.NER and c.group_id is None:
             bare = " ".join(c.text.split()).strip(" ,;:").lower()
             if c.pii_type is PiiType.CITY_STATE and (len(bare.replace(".", "")) <= 2 or bare in _COUNTRIES):
                 continue
+            if (c.pii_type in (PiiType.CITY_STATE, PiiType.STREET) and not any(ch.isdigit() for ch in bare)
+                    and any(w.strip(".,") in _LANDMARK_WORDS for w in bare.split())):
+                continue  # "the Corin River Trail" is a public landmark, not an address
             if c.pii_type is PiiType.PERSON and c.line is not None and _code_line(c.line.text):
                 continue
             words = [w.strip(".,;:()[]'\"\u2019").lower() for w in c.text.split()]
@@ -319,6 +331,10 @@ def _drop_numberless_model_streets(candidates: list) -> list:
                 and not any(ch.isdigit() for ch in c.text)
                 and any(w.strip(".,").lower() in _STREET_WORDS for w in c.text.split())):
             continue
+        if (c.pii_type is PiiType.STREET and c.source in (Source.NER, Source.COVERAGE) and c.group_id is None
+                and not re.match(r"^\d{1,6}\s", c.text.strip())
+                and not any(w.strip(".,()").lower() in _STREET_WORDS for w in c.text.split())):
+            continue  # a model "street" with no street word ("(540NR),") is not an address
         # A name-shaped "place" with no street word ("İpek Yılmaz" tagged FAC
         # beside "Main Street 4") is left for _retype_name_shaped_places, which
         # makes it a PERSON - dropping it here lost the name (caught by
@@ -337,6 +353,51 @@ _STREET_WORDS = {
 
 
 _HONORIFIC = re.compile(r"^(?:dr|mr|mrs|ms|mx|prof|rev|hon|sr|sra|srta)\.?\s+", re.I)
+
+
+_POSSESSIVE = re.compile(r"['\u2019][sS]?$")
+
+
+def _trim_possessives(candidates: list) -> list:
+    """"Quell's account": the name is "Quell"; the "'s" is grammar and stays.
+    Left in the span it became a separate token in the name registry and the
+    person got a SECOND synthetic surname."""
+    from dataclasses import replace
+
+    out = []
+    for c in candidates:
+        if c.pii_type is PiiType.PERSON and c.source is not Source.MANUAL:
+            m = _POSSESSIVE.search(c.text)
+            if m and m.start() > 1:
+                end = c.start + m.start()
+                rect = c.line.rect_for(c.start, end) if c.line is not None else None
+                if rect is not None:
+                    c = replace(c, text=c.text[: m.start()], end=end, rect=rect)
+        out.append(c)
+    return out
+
+
+def _retype_known_name_components(candidates: list) -> list:
+    """A registered person's name word that a MODEL typed as a place or company
+    ("Torvin confirmed ..." tagged GPE) is that person: the field label that
+    established the identity outranks a model's guess about one word."""
+    from dataclasses import replace
+
+    from .textnorm import fold
+
+    known = set()
+    for c in candidates:
+        if c.pii_type is PiiType.PERSON and (c.group_id is not None or c.source in (Source.GROUP, Source.COVERAGE)):
+            known.update(fold(t.strip(".,")) for t in c.text.split() if len(t.strip(".,")) >= 2)
+    out = []
+    for c in candidates:
+        if (c.source is Source.NER and c.group_id is None
+                and c.pii_type in (PiiType.CITY_STATE, PiiType.ORG_PRIVATE, PiiType.STREET)
+                and " " not in c.text.strip() and fold(c.text.strip(".,")) in known):
+            c = replace(c, pii_type=PiiType.PERSON, needs_review=True,
+                        review_reason=c.review_reason or "a known person's name, typed as a place by the model")
+        out.append(c)
+    return out
 
 
 def _trim_honorifics(candidates: list) -> list:
@@ -1038,6 +1099,8 @@ def analyse(
     candidates = _drop_numberless_model_streets(candidates)
     candidates = _drop_implausible_model_hits(candidates, document_form_vocabulary)
     candidates = _trim_honorifics(candidates)
+    candidates = _trim_possessives(candidates)
+    candidates = _retype_known_name_components(candidates)
     if conservative_mode():
         candidates, held_back = _conservative_filter(candidates)
         if held_back:

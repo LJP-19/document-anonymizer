@@ -177,7 +177,9 @@ def independent_verify(src: str, out: str, plan) -> dict:
 
 def status_from(app_report, checks: dict) -> str:
     critical = ["file_opens", "page_count_and_sizes", "applied_values_not_extractable",
-                "no_original_glyphs_inside_redaction_boxes", "hidden_structures_clean"]
+                "no_original_glyphs_inside_redaction_boxes", "hidden_structures_clean",
+                "replacements_red", "one_identity_per_person", "joint_filers_kept_apart",
+                "no_boxes_or_patches", "filename_pseudonymised"]
     if any(not checks.get(k, {}).get("passed", False) for k in critical):
         return "FAIL"
     soft_ok = checks.get("unrelated_text_preserved", {}).get("passed", False) and app_report.passed
@@ -185,20 +187,98 @@ def status_from(app_report, checks: dict) -> str:
     return "PASS" if soft_ok and not no_text else "PARTIAL PASS"
 
 
-def run_one(src: str, out: str, label: str, preview_dir: Path | None) -> dict:
+def identity_checks(src: str, out: str, plan, session) -> dict:
+    """Phase-2 checks: red replacements, one identity per person, joint filers
+    kept apart, no boxes drawn, filename free of original names. Counts only."""
+    from app.detection.types import PiiType
+
+    checks: dict[str, dict] = {}
+    red, not_red = 0, 0
+    with pymupdf.open(out) as dst:
+        spans = [(i, sp) for i, page in enumerate(dst) for b in page.get_text("dict")["blocks"]
+                 for l in b.get("lines", []) for sp in l["spans"] if sp["text"].strip()]
+        drawings_out = sum(len(p.get_drawings()) for p in dst)
+    with pymupdf.open(src) as s_doc:
+        drawings_in = sum(len(p.get_drawings()) for p in s_doc)
+    by_page: dict[int, list] = {}
+    for i, sp in spans:
+        by_page.setdefault(i, []).append(sp)
+    for t in plan.targets:
+        if t.blackout or not t.replacement:
+            continue
+        hits = [sp for sp in by_page.get(t.page_no, []) if sp["text"].strip() == t.replacement.strip()]
+        if hits:
+            red += 1
+            not_red += sum(1 for sp in hits if sp["color"] != 0xFF0000)
+    checks["replacements_red"] = {
+        "passed": not_red == 0,
+        "detail": f"{red} placed replacement(s) inspected; {not_red} not in the configured red",
+    }
+    # one identity per person: every lone name token maps as it does inside full names
+    names = session.registry.names
+    conflicts = 0
+    person = [t for t in plan.targets if t.pii_type is PiiType.PERSON and t.replacement]
+    for t in person:
+        o_tokens = [w for w in re.split(r"[\s,&]+", t.original) if w]
+        r_tokens = [w for w in re.split(r"[\s,&]+", t.replacement) if w]
+        if len(o_tokens) != len(r_tokens):
+            continue
+        for o, r in zip(o_tokens, r_tokens):
+            known = names.known(re.sub(r"['\u2019]s$", "", o)) if names else None
+            if known and known.lower() != re.sub(r"['\u2019]s$", "", r).lower():
+                conflicts += 1
+    checks["one_identity_per_person"] = {
+        "passed": conflicts == 0,
+        "detail": f"{len(person)} person replacement(s); {conflicts} token(s) disagreeing with the person's registered synthetic name",
+    }
+    joint_bad = 0
+    joint = [t for t in person if re.search(r"\s(&|and)\s", t.original)]
+    for t in joint:
+        if len(re.findall(r"\s(?:&|and)\s", t.original)) != len(re.findall(r"\s(?:&|and)\s", t.replacement)):
+            joint_bad += 1
+    checks["joint_filers_kept_apart"] = {
+        "passed": joint_bad == 0,
+        "detail": f"{len(joint)} joint-name replacement(s); {joint_bad} lost a person or separator",
+    }
+    checks["no_boxes_or_patches"] = {
+        "passed": drawings_out <= drawings_in,
+        "detail": f"vector drawings {drawings_in} in input, {drawings_out} in output",
+    }
+    originals = set()
+    for t in person:
+        originals.update(w.lower() for w in re.findall(r"[^\W\d_]{2,}", t.original))
+    name_words = {w.lower() for w in re.findall(r"[^\W\d_]{2,}", Path(out).stem)}
+    leaked = len(name_words & originals)
+    checks["filename_pseudonymised"] = {
+        "passed": leaked == 0,
+        "detail": f"{leaked} original name word(s) in the output filename; "
+                  f"{len(getattr(session, 'filename_review', []))} filename word(s) listed for review",
+    }
+    return checks
+
+
+def run_one(src: str, out: str, label: str, preview_dir: Path | None, accept_all: bool = False) -> dict:
+    """`out` may be a directory: the output is then named by the application's
+    own pseudonymised filename (session.safe_output_name)."""
     from app.decisions.manager import DecisionState
     from app.session import AnonymizationSession
 
     started = time.time()
     session = AnonymizationSession(source_path=src)
-    session.mapping_folder = str(Path(out).parent / "_private_mappings")
+    out_path = Path(out)
+    private = (out_path if out_path.is_dir() else out_path.parent) / "_private_mappings"
+    session.mapping_folder = str(private)
     session.analyse()
     analysed_at = time.time()
-    session.decisions.set_state(session.candidates, DecisionState.ACCEPTED)
+    if accept_all:
+        session.decisions.set_state(session.candidates, DecisionState.ACCEPTED)
+    if out_path.is_dir():
+        out = str(out_path / session.safe_output_name())
     apply_report, app_report = session.process(out)
     finished = time.time()
     plan = session.plan()
     checks = independent_verify(src, out, plan)
+    checks.update(identity_checks(src, out, plan, session))
     status = status_from(app_report, checks)
 
     detections = []
@@ -246,6 +326,11 @@ def run_one(src: str, out: str, label: str, preview_dir: Path | None) -> dict:
         "independent_checks": checks,
         "detections": detections,
         "unresolved": unresolved,
+        "held_for_review": [
+            {"page": c.page_no + 1, "category": c.pii_type.value, "bbox": [round(v, 2) for v in c.rect],
+             "reason": "ambiguous name component" if getattr(c, "ambiguous", False) else "not confirmed (default: not applied)"}
+            for c in session.candidates if not session.decisions.is_actionable(c)
+        ],
         "previews": previews,
     }
 
@@ -257,17 +342,24 @@ def main(argv=None) -> int:
     ap.add_argument("--names", nargs="*")
     ap.add_argument("--labels", nargs="*")
     ap.add_argument("--previews", action="store_true")
+    ap.add_argument("--accept-all", action="store_true",
+                    help="apply every detection (the CLI --accept-all); default: the app's own decisions")
     ap.add_argument("--json", default=None)
     args = ap.parse_args(argv)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     results = []
     for i, src in enumerate(args.inputs):
-        name = args.names[i] if args.names else f"{Path(src).stem}.redacted.pdf"
         label = args.labels[i] if args.labels else f"Document {i + 1}"
-        out = str(out_dir / name)
+        if args.names:
+            out = str(out_dir / args.names[i])
+        else:   # the application's own pseudonymised filename, one folder per input
+            sub = out_dir / f"doc{i + 1}"
+            sub.mkdir(parents=True, exist_ok=True)
+            out = str(sub)
         try:
-            r = run_one(src, out, label, out_dir / "previews" if args.previews else None)
+            r = run_one(src, out, label, out_dir / "previews" if args.previews else None,
+                        accept_all=args.accept_all)
         except Exception as exc:  # noqa: BLE001 - report, never fake an output
             r = {"document_id": label, "status": "NOT RUN", "failure_reason": f"{type(exc).__name__}"}
         results.append(r)

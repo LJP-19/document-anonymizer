@@ -80,7 +80,10 @@ def cmd_process(args) -> int:
         )
         return 2
 
-    out = args.output or str(Path(args.input).with_suffix("")) + ".anonymized.pdf"
+    out = args.output or str(Path(args.input).with_name(session.safe_output_name()))
+    if Path(out).resolve() == Path(args.input).resolve():
+        # Nothing identifying in the name: never write over the original.
+        out = str(Path(args.input).with_name(f"{Path(args.input).stem} (pseudonymized).pdf"))
     apply_report, report = session.process(out)
     print(
         f"\nProcessed: {apply_report.redacted} redaction(s), "

@@ -256,6 +256,14 @@ def identify_subjects(
         if len(tokens) >= 2:
             entity.aliases.add(tokens[-1])
             entity.aliases.add(" ".join(tokens))
+            # The given name alone identifies the person too ("Ann" for "Ann
+            # Tash"), once the full name is established. Surname-first values
+            # ("Tash, Ann") put it last. Each occurrence is still validated in
+            # propagate() and an uncertain one is only reported.
+            surname_first = "," in entity.value
+            given = tokens[1] if surname_first else tokens[0]
+            if given.strip(".,").isalpha() and len(given.strip(".,")) >= 2:
+                entity.aliases.add(given.strip(".,"))
         entity.aliases.update(spelling_variants(entity.value))
     return list(known.values())
 
@@ -411,6 +419,54 @@ def name_control_hits(doc: Document, entities: Iterable["KnownEntity"], covered:
     return found
 
 
+def _after_known_components(text: str, end: int, components: set) -> str:
+    """The text after a name match, skipping the person's OTHER name words.
+
+    "Marcus" in "Marcus Feldman Manufacturing Inc." is followed by the known
+    surname and then the business suffix: the occurrence belongs to the
+    business name exactly as the full name does, and the given-name alias must
+    not take it over once the full name was (correctly) refused there.
+    """
+    from .textnorm import fold
+
+    rest = text[end:]
+    while True:
+        m = re.match(r"\s+([^\W\d_][\w'\u2019\-]*)", rest)
+        if not m or fold(m.group(1)) not in components:
+            return rest
+        rest = rest[m.end():]
+
+
+_TITLES = {"mr", "mrs", "ms", "miss", "mx", "dr", "prof", "rev", "hon", "sir", "madam"}
+_JOINERS = {"and", "&", "or", "y", "et"}
+
+
+def _component_context_is_ambiguous(text: str, start: int, end: int, components: set) -> bool:
+    """Is a lone name component in a context that may mean someone or something else?
+
+    "Tash agreed" / "Mr. Tash" / "Tash's account" / "Tash and Tash" are the person.
+    "Corin River Trail", "TASH FAMILY TRUST", "Smith Barney" are not safely the
+    person: the FOLLOWING capitalised word makes it part of another name. A word written in lower case on a mixed-case line ("a tash of")
+    is an ordinary word. Only the immediately adjacent word, separated by ONE
+    space, counts - a wider gap is a table column, not part of the name.
+    """
+    from .textnorm import fold
+
+    matched = text[start:end]
+    if matched.islower() and any(ch.isupper() for ch in text):
+        return True
+    after = re.match(r" ([^\W\d_][\w'\u2019\-]*)", text[end:])
+    if after:
+        word = after.group(1)
+        bare = re.sub(r"['\u2019]s$", "", word)
+        if word[:1].isupper() and fold(bare) not in components and fold(bare) not in _JOINERS:
+            return True
+    # The word BEFORE is not used: sentences start with capitals ("Call John
+    # tomorrow"), and a real other person's full name ("Bob Tash") is already a
+    # model/rule candidate covering this spot, which keeps propagation off it.
+    return False
+
+
 def spelling_variants(name: str) -> set[str]:
     """Common ways the same name is written on different parts of a form.
 
@@ -472,6 +528,13 @@ def propagate(
     for candidate in candidates:
         covered.setdefault(candidate.line.key(), []).append((candidate.start, candidate.end))
 
+    from .textnorm import fold
+
+    components = {
+        fold(t.strip(".,"))
+        for e in entities if e.pii_type is PiiType.PERSON
+        for form in e.all_forms for t in form.replace(",", " ").split()
+    }
     patterns: list[tuple[KnownEntity, str, re.Pattern]] = []
     for entity in entities:
         for form in entity.all_forms:
@@ -499,7 +562,7 @@ def propagate(
                     if any(match.start() < e and s < match.end() for s, e in existing):
                         continue
                     if entity.pii_type is PiiType.PERSON and ORG_SUFFIX_AFTER.match(
-                        line.text[match.end():match.end() + 20]
+                        _after_known_components(line.text, match.end(), components)[:20]
                     ):
                         # "LJP Manufacturing Inc." - do not transform the
                         # known person's name into the start of a different
@@ -520,7 +583,10 @@ def propagate(
                     # occurrence of its parts goes. The org-suffix guard above ("Smith Inc.")
                     # and the protected-text gate still apply; it is flagged so a reviewer
                     # can keep the odd one ("Smith & Wesson").
-                    ambiguous = False
+                    ambiguous = bool(
+                        entity.pii_type is PiiType.PERSON and " " not in form.strip()
+                        and _component_context_is_ambiguous(line.text, match.start(), match.end(), components)
+                    )
                     found.append(
                         Candidate(
                             pii_type=entity.pii_type,
@@ -548,6 +614,7 @@ def propagate(
                                 "accept it only if it is the same person" if ambiguous
                                 else "matched on part of a known name"
                             ),
+                            ambiguous=ambiguous,
                         )
                     )
                     existing.append((match.start(), match.end()))

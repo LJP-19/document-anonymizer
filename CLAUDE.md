@@ -2485,3 +2485,50 @@ scrambled letters. A stacked candidate that starts with "<caption>:" ends the
 field. Label detection also ignores a leading bullet/dash now (`labels.BULLET_RE`).
 Lesson: every relaxation of the stacking loop needs a matching "this is a new
 field" stop; check the real-sample previews, not only the scores.
+
+## v0.40.0: one person, one synthetic identity (owner's phase-2 rules)
+
+Tests: `tests/test_pseudonymization_identity.py` (owner's acceptance tests A-J).
+
+- **Name ROLES are learned before anything is generated** (`plan._seed_name_roles`,
+  `NameRegistry.seed_role/seed_full_name`): field labels first ("first name" ->
+  given, "last name" -> surname), then full names longest first. Before this the
+  FIRST sighting decided, and a first name met alone became a surname ("Espinoza
+  Harris"). Never generate a name pseudonym before seeding.
+- **Possessives are grammar** (`engine._trim_possessives`, `NameRegistry.pseudonym`):
+  "Quell's" became a separate token and the person got a second surname.
+- **Given-name aliases propagate, with context validation**
+  (`entities_pass._component_context_is_ambiguous`). A lone component followed by an
+  unregistered capitalised word ("Corin River Trail", "Smith Barney"), or written in
+  lower case on a mixed-case line, is `Candidate.ambiguous`: listed for review and
+  NEVER applied automatically (`decisions/manager.py`). The word BEFORE is not used
+  (sentences start with capitals). The org-suffix guard looks past the person's other
+  name words (`_after_known_components`: "Marcus [Feldman] Manufacturing Inc.").
+- **A registered person's name word typed as a place by a model is that person**
+  (`engine._retype_known_name_components`).
+- **Joint names**: the standalone pattern takes a preceding name word into the first
+  person ("Ann Tash & Bo Tash" -> two full names) and refuses place/form words
+  (`heuristics._PLACE_WORDS`); in the form's typeface it is a proposal and is vetoed.
+- **Filenames keep their structure** (`session.safe_output_name`): only CONFIRMED
+  identities are replaced, with the document's own pseudonyms; no suffix is added;
+  name-shaped words found only in the filename are listed in `filename_review`, never
+  guessed (owner's rule - guessing rewrote words such as "Latest"/"Filed").
+- **Mapping workbooks live in a private per-user folder by default**
+  (`~/.document-anonymizer/mappings`, 0700; files 0600; `roster.mapping_path_for`),
+  never beside the outputs. Remove them by deleting that folder.
+- **Replacement text stays red** (owner, phase 2, explicitly) - `plan.RED`. Placement:
+  `redactor._insert_at_baseline` writes at the value's own x and baseline, in the
+  value span's own font/size (`Line.span_at`), down to 80% size if the next word or
+  target on the row is close; otherwise the v0.8.3 boxed logic and its `insert_text(`
+  fallback run unchanged.
+- **Removal is per glyph** (`redactor.removal_rects`): one rectangle at the centre of
+  each of the value's own glyphs (`Target.char_rects`), kept clear of words above and
+  below. A single rectangle per value either took a touching label word with it or,
+  shrunk further, left part of the value behind (verified FAIL on real returns). Every
+  target glyph is always intersected; never trade that away for neighbours.
+- **Form style by family**: an oblique/condensed cut of a template font in the template
+  colour is form text too (`layout_style.in_form_style`).
+- **Shape masking keeps words** (`generator._mask_preserving_shape`): letters are only
+  substituted inside tokens that contain digits - the source of scrambled replacements.
+- **Only confirmed PII is applied by default**: the QA runner uses the app's own
+  decisions (`buildtools/qa_run.py`; `--accept-all` is opt-in) and reports what was held.

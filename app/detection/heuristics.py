@@ -313,6 +313,17 @@ _NAME_RUN = r"[^\W\d_][\w'\u2019\-]{1,20}"
 JOINT_NAME = re.compile(rf"\b({_NAME_RUN})\s*(?:&|\band\b)\s*({_NAME_RUN})\s+({_NAME_RUN})\b")
 
 
+#: Words that end a place, road or facility name, never a person's.
+_PLACE_WORDS = {
+    "street", "st", "avenue", "ave", "road", "rd", "boulevard", "blvd", "drive", "dr", "lane",
+    "ln", "court", "ct", "way", "circle", "terrace", "parkway", "highway", "trail", "path",
+    "loop", "common", "bridge", "tunnel", "park", "square", "plaza", "river", "lake", "creek",
+    "mountain", "mount", "valley", "beach", "bay", "island", "county", "city", "town",
+    "village", "center", "centre", "hall", "station", "airport", "school", "university",
+    "college", "hospital", "clinic", "church", "films", "studios", "bank", "trust", "fund",
+}
+
+
 def detect_joint_names(line: Line) -> list[Candidate]:
     """Standalone joint-name detection, independent of any field/group."""
     from .types import Evidence, PiiType, Source
@@ -324,9 +335,23 @@ def detect_joint_names(line: Line) -> list[Candidate]:
             continue
         if _is_form_vocabulary(first) or _is_form_vocabulary(second) or _is_form_vocabulary(surname):
             continue
+        if any(w.lower().strip(".,") in _PLACE_WORDS for w in (first, second, surname)):
+            continue  # "... River Trail and Bela Lugosi" is not a couple
+        first_start = match.start(1)
+        prev = re.search(r"([^\W\d_][\w'\u2019\-]*) $", line.text[: match.start(1)])
+        if prev:
+            word = prev.group(1)
+            if word.lower().strip(".,") in _PLACE_WORDS or _is_form_vocabulary(word):
+                continue
+            if (_token_ok(word) and _case_class(word) in ("title", "mixed", "upper")
+                    and word.lower().strip(".") not in _TITLE_WORDS):
+                # "Ann Tash & Bo Tash": the first person is the full name
+                # "Ann Tash", not the lone word before the ampersand.
+                first_start = prev.start(1)
+                first = line.text[first_start: match.end(1)]
         household = f"{first} {second} {surname}"
         for name, start, end in (
-            (first, match.start(1), match.end(1)),
+            (first, first_start, match.end(1)),
             (f"{second} {surname}", match.start(2), match.end(3)),
         ):
             rect = line.rect_for(start, end)

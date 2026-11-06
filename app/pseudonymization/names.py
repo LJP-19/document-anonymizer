@@ -131,9 +131,28 @@ class NameRegistry:
             if _is_structural(piece):
                 out.append(piece)
                 continue
-            is_surname = fold(piece.strip(".,")) == surname_word
-            out.append(self._substitute(piece, surname=is_surname))
+            # A possessive is the same name: "Quell's" -> "<Quell's pseudonym>'s".
+            possessive = re.search(r"['\u2019][sS]?$", piece)
+            base = piece[: possessive.start()] if possessive and len(piece) > 2 else piece
+            tail = piece[len(base):]
+            is_surname = fold(base.strip(".,")) == fold(re.sub(r"['\u2019][sS]?$", "", surname_word))
+            out.append(self._substitute(base, surname=is_surname) + tail)
         return "".join(out)
+
+    def seed_role(self, token: str, surname: bool) -> None:
+        """Fix a token's role (given name or surname) before it is ever seen
+        alone. Without this the FIRST sighting decided: a first name met alone
+        on a summary page was treated as a surname, and the person's full name
+        came out as two surnames ("Espinoza Harris")."""
+        bare = token.strip(".,")
+        if not bare or _is_structural(bare) or fold(bare) in self.tokens:
+            return
+        self._substitute(bare, surname=surname)
+
+    def seed_full_name(self, name: str) -> None:
+        """Learn token roles from a full name ("Ann Tash", "Tash, Ann",
+        "Ann & Bo Tash") by pseudonymizing it once, before any lone token."""
+        self.pseudonym(name)
 
     def known(self, token: str) -> Optional[str]:
         return self.tokens.get(fold(token.strip(".,")))

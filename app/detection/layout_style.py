@@ -112,6 +112,24 @@ def form_styles(labels: list, groups: list) -> set[tuple[str, int]]:
     }
 
 
+def _family(font: str) -> str:
+    """"HelveticaLTStd-Obl" -> "HelveticaLTStd": weight/slant variants of one face."""
+    return (font or "").split("-")[0].split(",")[0]
+
+
+def in_form_style(line, styles: set) -> bool:
+    """The line is set in a form style, or in another weight/slant of the same
+    typeface in the same colour (the template's oblique or condensed cut,
+    which carries too few whole-line labels to be learned on its own)."""
+    style = line_style(line)
+    if style is None or not styles:
+        return False
+    if style in styles:
+        return True
+    families = {(_family(f), c) for f, c in styles}
+    return (_family(style[0]), style[1]) in families
+
+
 def veto_form_styled_proposals(
     candidates: list[Candidate], styles: set
 ) -> tuple[list[Candidate], int]:
@@ -125,8 +143,12 @@ def veto_form_styled_proposals(
     kept: list[Candidate] = []
     dropped = 0
     for c in candidates:
-        proposal = c.source in (Source.NER, Source.COVERAGE) and c.group_id is None
-        if proposal and c.pii_type in WORDING_TYPES and line_style(c.line) in styles:
+        proposal = c.group_id is None and (
+            c.source in (Source.NER, Source.COVERAGE)
+            # the standalone joint-name pattern ("X and Y Z") is a proposal too
+            or (c.source is Source.GROUP and any("joint-name" in e.detail for e in c.evidence))
+        )
+        if proposal and c.pii_type in WORDING_TYPES and in_form_style(c.line, styles):
             dropped += 1
             continue
         kept.append(c)
