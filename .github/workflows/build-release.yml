@@ -28,6 +28,11 @@ on:
         description: "Skip the test suites (build installers only). Tag releases are always tested."
         type: boolean
         default: false
+      platforms:
+        description: "Which installers to build (tag releases always build both)"
+        type: choice
+        options: ["all", "macos", "windows"]
+        default: "all"
 
 permissions:
   contents: read
@@ -146,7 +151,7 @@ jobs:
   windows:
     name: Windows installer (x64)
     needs: [version, test]
-    if: ${{ always() && needs.version.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    if: ${{ always() && needs.version.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') && (github.event_name != 'workflow_dispatch' || inputs.platforms != 'macos') }}
     runs-on: windows-latest
     timeout-minutes: 150
     env:
@@ -253,10 +258,11 @@ jobs:
   macos:
     name: macOS DMG (Apple Silicon arm64)
     needs: [version, test]
-    if: ${{ always() && needs.version.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
-    # macos-14 is Apple Silicon. Intel is not built: torch (pinned in
-    # requirements.txt) publishes no macOS x86_64 wheels for this version.
-    runs-on: macos-14
+    if: ${{ always() && needs.version.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') && (github.event_name != 'workflow_dispatch' || inputs.platforms != 'windows') }}
+    # macos-latest is Apple Silicon (arm64); the "Check the architecture" step fails
+    # the build if that ever changes. (The pinned macos-14 image was retired.) Intel
+    # is not built: the pinned torch publishes no macOS x86_64 wheels.
+    runs-on: macos-latest
     timeout-minutes: 150
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -364,7 +370,8 @@ jobs:
     # releases only when asked to.
     if: >-
       always() &&
-      needs.windows.result == 'success' && needs.macos.result == 'success' &&
+      (needs.windows.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.platforms == 'macos')) &&
+      (needs.macos.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.platforms == 'windows')) &&
       (needs.test.result == 'success' || needs.test.result == 'skipped') &&
       (github.ref_type == 'tag' ||
        (github.event_name == 'workflow_dispatch' && inputs.release != 'none'))
@@ -388,6 +395,7 @@ jobs:
         run: |
           cd assets
           sha256sum -c *.sha256
+          shopt -s nullglob
           sha256sum *.exe *.dmg > SHA256SUMS.txt
           cat SHA256SUMS.txt
           python3 - <<'PY'
@@ -416,6 +424,7 @@ jobs:
             echo
             echo "| Download | Platform |"
             echo "|---|---|"
+            shopt -s nullglob
             for f in *.exe *.dmg; do
               case "$f" in *.exe) p="Windows 10/11, x64 installer";; *SIGNED-NOTARIZED*) p="macOS 13+, Apple Silicon (arm64), signed and notarized";; *) p="macOS 13+, Apple Silicon (arm64), UNSIGNED";; esac
               echo "| \`$f\` | $p |"
@@ -442,6 +451,7 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "::error::release $tag already exists - releases are never overwritten. Bump the version."; exit 1
           fi
+          shopt -s nullglob
           gh release create "$tag" "${flags[@]}" \
             assets/*.exe assets/*.dmg assets/SHA256SUMS.txt assets/build-manifest.json assets/RELEASE_NOTES.md
           gh release view "$tag" --json url,isDraft,assets --jq '{url, isDraft, assets: [.assets[].name]}'
