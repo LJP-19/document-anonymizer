@@ -37,10 +37,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: build-release-${{ github.ref }}
-  cancel-in-progress: false
-
 env:
   PYTHON_VERSION: "3.12"
   # Pinned model wheel. Installed from a URL at build time, bundled, never
