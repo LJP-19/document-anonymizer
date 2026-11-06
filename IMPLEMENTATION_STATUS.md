@@ -7,7 +7,38 @@ honest state of what is and is not done.
 
 ## Current version
 
-**0.39.0** - accuracy audit against real, software-prepared returns (below).
+**0.40.0** - one synthetic identity per person, strict PII-only defaults, red baseline
+replacement, pseudonymized filenames (below). 0.39.0 - real-document accuracy audit.
+
+## This pass (0.40.0): identity-consistent pseudonymization, strict PII-only defaults
+
+Same three diagnostic returns and stack as 0.39.0 (en_core_web_trf; GLiNER weights
+unavailable; Presidio and the LLM off). This time the app's OWN default decisions are
+used - only confirmed PII is applied; untyped, weakly evidenced and ambiguous items are
+held, listed and left readable.
+
+| Measure | v0.38.2 | 0.39.0 | 0.40.0 |
+|---|---:|---:|---:|
+| Real samples, precision / recall / F1 | 0.444 / 0.850 / 0.583 | 0.888 / 0.897 / 0.892 | @REAL@ |
+| Real samples, wrongly redacted / missed words | 2873 / 405 | 306 / 277 | @FPFN@ |
+| Synthetic form corpus, precision / recall / F1 | 0.825 / 0.871 / 0.848 | 1.000 / 1.000 / 1.000 | @SYN@ |
+
+What changed (durable rules in CLAUDE.md "v0.40.0" sections; tests A-J in
+`tests/test_pseudonymization_identity.py`): name roles learned before generation;
+possessives and honorifics kept around the replacement; given-name/surname aliases
+with context ambiguity (ambiguous components held, never applied); joint filers kept
+as separate people; replacement text red at the value's own baseline/font/size with
+per-glyph removal; filenames keep their structure and replace only confirmed names;
+mapping workbooks in a private per-user folder; no letter scrambling of word tokens.
+Found and fixed during the final QA run: dependents-column role seeding, the "If joint
+return, spouse's first name" label, house-number digit count, name-shaped model
+"streets", and overlapping replacements on a crowded row.
+
+Not done / open: the inputs are outputs of earlier versions (old red pseudonyms,
+overprinted text), so they are not a clean ground truth; one page per return has no
+text (no OCR); GLiNER not exercised here; remaining misses are mostly unlabelled names
+and dates; the frozen-app self-test cannot run in this sandbox (no transformers).
+
 
 ## This pass (0.39.0): real-document accuracy audit
 
