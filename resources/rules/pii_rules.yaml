@@ -149,6 +149,9 @@ rules:
     confidence: 0.55
     context_any: [zip, postal, address, city, state]
     money_guard: true
+    # Owner (0.42.0): five digits are not automatically a ZIP code. Without
+    # address context the shape alone is held for review, never applied.
+    review_unless_context: true
 
   - name: city_state_zip
     type: ADDRESS

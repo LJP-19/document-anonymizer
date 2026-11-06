@@ -74,6 +74,7 @@ def test_a_company_typed_as_a_person_is_flagged_and_nothing_else_changes():
     from app.decisions.manager import DecisionManager, DecisionState
 
     c = _cand("Acme Manufacturing Inc.", PiiType.PERSON, line_text="Employer: Acme Manufacturing Inc.")
+    c.label_confirmed = True  # stands in for a label-bound value
     manager = DecisionManager()
     manager.register([c])
     assert manager.state(c) is DecisionState.ACCEPTED
@@ -84,7 +85,11 @@ def test_a_company_typed_as_a_person_is_flagged_and_nothing_else_changes():
     assert "a company or organization" in c.review_reason and "not a person's name" in c.review_reason
     assert c.pii_type is PiiType.PERSON, "flag-only: the type must never be changed"
     assert c.text == "Acme Manufacturing Inc."
-    assert manager.state(c) is DecisionState.ACCEPTED, "flag-only: the decision must never be changed"
+    assert manager.state(c) is DecisionState.ACCEPTED, "flag-only: the stored decision is not rewritten"
+    # ...but the flag is a veto at the transformation boundary (0.42.0): the
+    # automatic approval no longer holds, so the plan refuses it.
+    from app.decisions.authorization import assess
+    assert not assess(c).eligible
 
 
 def test_agreement_flags_nothing():

@@ -147,8 +147,22 @@ def removal_rect(rect) -> pymupdf.Rect:
     return pymupdf.Rect(r.x0 + 0.2, r.y0 + dy, r.x1 - 0.2, r.y1 - dy)
 
 
+class UnauthorizedTargetError(RuntimeError):
+    """A plan target that never passed the authorization boundary in build_plan."""
+
+
 def apply_plan(plan: TransformationPlan, doc: Optional[pymupdf.Document] = None) -> tuple[pymupdf.Document, ApplyReport]:
-    """Apply the plan to a copy of the source document. Never mutates the original file."""
+    """Apply the plan to a copy of the source document. Never mutates the original file.
+
+    Authorization is re-checked here, immediately before anything is drawn: every
+    target must carry the authorization build_plan gave it. A target that did not
+    pass the transformation boundary (built by hand, or added to a plan after it
+    was built) is refused - the redactor never invents work of its own."""
+    unauthorized = [t.candidate_id for t in plan.targets if not getattr(t, "authorized_by", "")]
+    if unauthorized:
+        raise UnauthorizedTargetError(
+            f"{len(unauthorized)} target(s) carry no authorization; nothing was written"
+        )
     with PDF_LOCK:
         own = doc is None
         pdf = doc if doc is not None else pymupdf.open(plan.source_path)

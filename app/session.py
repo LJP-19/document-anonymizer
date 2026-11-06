@@ -67,6 +67,10 @@ class Status:
     PROCESSING = "PROCESSING"
     VERIFYING = "VERIFYING"
     VERIFIED = "EXPORT VERIFIED"
+    #: The written file passed verification, but items a person must decide are
+    #: still undecided and were LEFT READABLE: a working preview, not a fully
+    #: reviewed document.
+    REVIEW_INCOMPLETE = "EXPORT VERIFIED - REVIEW INCOMPLETE"
     PARTIALLY_ANALYZED = "PARTIALLY ANALYZED"
     OCR_REQUIRED = "OCR REQUIRED"
     VERIFICATION_FAILED = "VERIFICATION FAILED"
@@ -228,8 +232,10 @@ class AnonymizationSession:
 
             gated, gate_log = CandidateGate(self.detection.protection).run(added)
             self.detection.gate_log.extend(gate_log)
+            from .decisions.authorization import annotate_label_binding
             from .detection.protection import confirmed_name_tokens, hold_unconfirmed_proposals
 
+            annotate_label_binding(gated, self.detection.groups)
             gated, _held = hold_unconfirmed_proposals(gated, confirmed_name_tokens(self.detection.candidates))
             refused = len(added) - len(gated)
             added = gated
@@ -268,10 +274,10 @@ class AnonymizationSession:
     def _derive_status(self) -> str:
         if self.document and self.document.ocr_required_pages:
             return Status.OCR_REQUIRED
-        if self.detection and any(
+        if self.detection and (self.decisions.awaiting_review(self.detection.candidates) or any(
             c.needs_review and self.decisions.state(c) is not DecisionState.SKIPPED
             for c in self.detection.candidates
-        ):
+        )):
             return Status.NEEDS_REVIEW
         return Status.READY
 
@@ -386,6 +392,8 @@ class AnonymizationSession:
         report = verify(plan, output_path)
         self.mapping_file = self.write_mapping(output_path)
         self.status = Status.VERIFIED if report.passed else Status.VERIFICATION_FAILED
+        if report.passed and self.decisions.awaiting_review(self.candidates):
+            self.status = Status.REVIEW_INCOMPLETE
         if self.document and self.document.ocr_required_pages:
             self.status = Status.VERIFICATION_FAILED if not report.passed else Status.PARTIALLY_ANALYZED
         return apply_report, report
@@ -704,8 +712,13 @@ class AnonymizationSession:
         )
         self._adopt(created, ambiguous)
         for c in created:
+            # The user asked for THIS person everywhere ("apply to the same"):
+            # an evidence-linked full form is covered by that decision. Context-
+            # ambiguous short forms (`ambiguous`) are NOT - they wait for review.
             if replacement:
                 self.decisions.edit([c], compose_replacement(replacement, c.text))
+            else:
+                self.decisions.set_state([c], DecisionState.ACCEPTED)
             self.decisions.mark_reviewed([c], True)
         pages = {c.page_no for c in created}
         self.last_apply_message = (

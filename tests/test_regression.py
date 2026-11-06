@@ -114,12 +114,16 @@ def test_unclassified_value_line_is_surfaced_but_not_replaced(pdfs):
     assert all(s.decisions.state(c) is DecisionState.SKIPPED for c in unclassified)
 
 
-def test_low_confidence_detections_are_redacted_by_default(pdfs):
-    """The 987-65-4321 case: flagged, but still removed unless kept explicitly."""
+def test_low_confidence_detections_are_held_for_review(pdfs):
+    """The 987-65-4321 case: flagged and low-confidence. Fail CLOSED (0.42.0): it is
+    listed for review and left readable until a person decides - the old default
+    ('removed unless kept explicitly') was the fail-open bug."""
     s = analysed(pdfs["table"])
     weak = next(c for c in s.candidates if c.normalized == "987-65-4321")
     assert weak.needs_review and weak.confidence < 0.9
-    assert s.decisions.state(weak) is DecisionState.ACCEPTED
+    assert not s.decisions.is_actionable(weak)
+    assert s.decisions.origin(weak) == "REVIEW_REQUIRED"
+    assert weak.id not in {t.candidate_id for t in s.plan().targets}
 
 
 # --- label protection (sections 13, 85) ------------------------------------
@@ -1017,17 +1021,17 @@ def test_review_model_suggestions_are_not_applied_unasked():
         )
 
     from_rule, from_audit = make(Source.REGEX), make(Source.AUDIT)
+    from_rule.label_confirmed = True  # a rule match bound to its own field label
     from_audit.line = Line(page_no=0, block_no=0, line_no=1, spans=[span], text="X",
                            offsets=[char], bbox=(0, 0, 5, 10))
 
     manager = DecisionManager()
     manager.register([from_rule, from_audit])
     assert manager.state(from_rule) is DecisionState.ACCEPTED
-    # Reversed on the owner's instruction: a TYPED finding from the review
-    # model is redacted by default (and stays flagged for review) instead of
-    # waiting for a decision. What still waits - untyped values, and values
-    # with too little evidence - is covered in tests/test_audit_default.py.
-    assert manager.state(from_audit) is DecisionState.ACCEPTED
+    # Strict authorization (0.42.0): a review-model finding is a proposal and
+    # waits for a person; it is never applied unasked.
+    assert manager.state(from_audit) is DecisionState.SKIPPED
+    assert not manager.is_actionable(from_audit)
 
 
 # --- pseudonym quality -----------------------------------------------------

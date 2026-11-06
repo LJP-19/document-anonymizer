@@ -404,8 +404,16 @@ def _retype_known_name_components(candidates: list) -> list:
         if (c.source is Source.NER and c.group_id is None
                 and c.pii_type in (PiiType.CITY_STATE, PiiType.ORG_PRIVATE, PiiType.STREET)
                 and " " not in c.text.strip() and fold(c.text.strip(".,")) in known):
-            c = replace(c, pii_type=PiiType.PERSON, needs_review=True,
-                        review_reason=c.review_reason or "a known person's name, typed as a place by the model")
+            from .entities_pass import _component_context_is_ambiguous
+
+            # The SAME context check propagation applies to a lone component:
+            # "Torvin confirmed ..." is the person, "Torvin River Trail" may not be.
+            unclear = c.line is not None and _component_context_is_ambiguous(c.line.text, c.start, c.end, known)
+            c = replace(c, pii_type=PiiType.PERSON, ambiguous=unclear, needs_review=unclear,
+                        review_reason=("a known person's name word in a context that may mean something else"
+                                       if unclear else ""),
+                        evidence=list(c.evidence) + [Evidence(Source.COVERAGE,
+                                                              "a label-confirmed person's name word", 0.0)])
         out.append(c)
     return out
 
@@ -586,8 +594,22 @@ def _retype_from_labels(candidates: list, groups: list) -> list:
                 )
             )
             candidate.pii_type = expected[0]
+            _clear_type_doubt(candidate)
             break
     return candidates
+
+
+#: Review flags that only express a MODEL's doubt about its own type guess. Once a
+#: field label (or a label-confirmed identity) settles the type, they no longer
+#: apply - a flag that outlives its reason holds a confirmed value for no reason.
+_TYPE_DOUBT_REASONS = ("location entity outside a labelled address group",
+                       "a known person's name, typed as a place by the model")
+
+
+def _clear_type_doubt(candidate) -> None:
+    if candidate.needs_review and (candidate.review_reason or "").strip() in _TYPE_DOUBT_REASONS:
+        candidate.needs_review = False
+        candidate.review_reason = ""
 
 
 #: Words that make text read as a street. A "street address" with no digit and none of
@@ -1170,6 +1192,11 @@ def analyse(
     # The authority: whatever any layer proposed, nothing protected is redacted,
     # nothing is clipped short of its real value, and every outcome has a reason.
     candidates, gate_log = CandidateGate(protection).run(candidates)
+    # Verified label binding first: the corroboration hold and the authorization
+    # policy both read it, and a bare group id is not proof of a label.
+    from ..decisions.authorization import annotate_label_binding
+
+    annotate_label_binding(candidates, groups)
     # Strict PII-only: a proposal nothing corroborates is held for review.
     candidates, held = hold_unconfirmed_proposals(candidates)
     if held:

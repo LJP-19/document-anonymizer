@@ -172,7 +172,11 @@ def _absorb(winner: Candidate, loser: Candidate) -> None:
     """Keep the losing detector's evidence; flag genuine disagreement."""
     winner.evidence.extend(loser.evidence)
     winner.group_id = winner.group_id or loser.group_id
-    if not _compatible(winner.pii_type, loser.pii_type) and winner.source is not Source.GROUP:
+    # A shape-only match (a rule held for lack of context, e.g. five bare digits
+    # "as a ZIP") is not a second opinion: it does not make a disagreement.
+    shape_only = getattr(loser, "ambiguous", False) and loser.source is Source.REGEX
+    if (not _compatible(winner.pii_type, loser.pii_type) and winner.source is not Source.GROUP
+            and not shape_only):
         winner.needs_review = True
         winner.review_reason = (
             winner.review_reason

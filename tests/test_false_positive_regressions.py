@@ -188,7 +188,21 @@ def test_the_false_positive_corpus_has_no_false_positives(tmp_path):
         src = extract_words(path)
         result = score(src, kept_mask(src, extract_words(out)), geometric_labeller(items))
         assert result.fp == 0, (name, result.as_dict()["by_category"])
-        assert result.fn == 0, (name, result.as_dict()["by_category"])
+        # Strict (0.42.0): PII nothing confirms (e.g. a "Prepared for:" block
+        # with no recognised label) may stay readable - but only because it was
+        # FOUND and is waiting for review, never because it was missed.
+        if result.fn:
+            from benchmark.output_scoring import PII
+            label = geometric_labeller(items)
+            out_words = extract_words(out)
+            kept = kept_mask(src, out_words)
+            held = s.decisions.awaiting_review(s.candidates)
+            for p, page in enumerate(src):
+                for i, w in enumerate(page):
+                    if label(w)[0] == PII and kept[p][i]:
+                        cx, cy = w.center
+                        assert any(c.page_no == p and c.rect[0] - 1 <= cx <= c.rect[2] + 1
+                                   and c.rect[1] - 1 <= cy <= c.rect[3] + 1 for c in held), (name, w.text)
 
 
 def test_two_template_cells_side_by_side_are_a_header_row_not_a_field(tmp_path):

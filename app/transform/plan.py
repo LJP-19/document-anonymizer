@@ -38,6 +38,10 @@ class Target:
     #: the centre of each, so a neighbour whose box overlaps the value's is not
     #: taken with it (PyMuPDF removes every character a rectangle touches).
     char_rects: list = field(default_factory=list)
+    #: Who authorized this target (decisions.authorization.AuthOrigin value).
+    #: Set ONLY by build_plan after the authorization check; the redactor refuses
+    #: a target without it.
+    authorized_by: str = ""
 
 
 @dataclass
@@ -62,6 +66,11 @@ class TransformationPlan:
     #: document, at plan-build time - the verifier compares against this
     #: instead of assuming every accepted value must vanish completely.
     expected_residual_counts: dict = field(default_factory=dict)
+    #: One sanitized record per candidate: page, rectangle, type, source, decision,
+    #: authorization origin and reason, and what happened to it. No text.
+    authorization_log: list = field(default_factory=list)
+    #: Candidates marked ACCEPTED that the authorization policy refused here.
+    refused: list = field(default_factory=list)
 
     @property
     def replacements(self) -> list[str]:
@@ -180,8 +189,23 @@ def build_plan(
 
     unresolved: list = []
 
+    from ..decisions.authorization import assess, confirmed_name_words
+
+    confirmed_words = confirmed_name_words(detection.candidates)
+
+    def _log(candidate, state, origin, reason, outcome):
+        plan.authorization_log.append({
+            "candidate_id": candidate.id, "page": candidate.page_no + 1,
+            "rect": [round(v, 1) for v in candidate.rect], "pii_type": candidate.pii_type.value,
+            "source": candidate.source.value, "label_bound": bool(getattr(candidate, "label_confirmed", False)),
+            "needs_review": bool(candidate.needs_review), "adjudication": getattr(candidate, "adjudication", ""),
+            "decision": state.value, "authorization": origin, "reason": reason, "outcome": outcome,
+        })
+
     for candidate in detection.candidates:
         state = decisions.state(candidate)
+        decision = decisions.decisions.get(candidate.id)
+        origin = decision.origin if decision is not None else "REVIEW_REQUIRED"
         if state not in (
             DecisionState.ACCEPTED,
             DecisionState.EDITED,
@@ -190,6 +214,28 @@ def build_plan(
             if state is DecisionState.SKIPPED:
                 plan.skipped_values.append(candidate.normalized)
                 skipped_lines.add(candidate.line.key())
+            _log(candidate, state, origin, decision.reason if decision else "", "left readable")
+            continue
+
+        # THE AUTHORIZATION BOUNDARY. A person's decision stands. An automatic
+        # approval is re-checked against the one policy here, so a candidate any
+        # earlier component wrongly marked ACCEPTED is refused, not transformed.
+        if origin in ("USER_APPROVED", "USER_EDITED", "USER_ADDED"):
+            authorized_by, why = origin, "decided by the user"
+        elif origin == "AUTO_APPROVED" and state is DecisionState.ACCEPTED:
+            verdict = assess(candidate, confirmed_words)
+            if not verdict.eligible:
+                plan.refused.append(candidate.id)
+                _log(candidate, state, "REJECTED", verdict.reason, "refused at the transformation boundary")
+                skipped_lines.add(candidate.line.key())
+                plan.skipped_values.append(candidate.normalized)
+                continue
+            authorized_by, why = origin, verdict.reason
+        else:
+            plan.refused.append(candidate.id)
+            _log(candidate, state, "REJECTED", f"no authorization ({origin})", "refused at the transformation boundary")
+            skipped_lines.add(candidate.line.key())
+            plan.skipped_values.append(candidate.normalized)
             continue
 
         # No type means no replacement. Generating one for a span nothing could
@@ -206,6 +252,7 @@ def build_plan(
             # deliberately left readable because nothing could type it.
             skipped_lines.add(candidate.line.key())
             plan.skipped_values.append(candidate.normalized)
+            _log(candidate, state, origin, "nothing could say what kind of value this is", "left readable")
             continue
 
         override = decisions.override(candidate)
@@ -236,8 +283,10 @@ def build_plan(
             pii_type=candidate.pii_type,
             group_id=candidate.group_id,
             state=state,
+            authorized_by=authorized_by,
         )
         plan.targets.append(target)
+        _log(candidate, state, authorized_by, why, "transformed")
         if replacement:
             plan.replacement_map[candidate.normalized] = replacement
         if candidate.group_id:

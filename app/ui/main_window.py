@@ -954,22 +954,23 @@ class DocumentTab(QWidget):
         self._guard('Redact everything', lambda: self._redact_all())
 
     def _redact_all(self) -> None:
-        groups = self.groups()
-        pending = [g for g in groups if not self._is_reviewed(g)]
+        held = self.session.decisions.awaiting_review(self.session.candidates)
         answer = QMessageBox.question(
             self,
-            "Redact everything?",
-            f"{len(pending)} item(s) still awaiting review will be pseudonymized "
-            f"and moved to Done.\n\nNothing is written until you press Process.",
+            "Redact everything confirmed?",
+            "Every item the app confirmed as PII will be pseudonymized.\n\n"
+            f"{len(held)} uncertain item(s) are NOT included: each needs your own "
+            "Redact, Keep or Edit and stays readable until then.\n\n"
+            "Nothing is written until you press Process.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self.session.decisions.set_state(self.session.candidates, REDACT)
-        # Deciding is reviewing: everything moves to Done, as it does for a
-        # single item.
-        self.session.decisions.mark_reviewed(self.session.candidates, True)
+        # Fail closed (0.42.0): a bulk button approves only what the policy
+        # auto-approves; it is not a judgement on each uncertain item.
+        approved = self.session.decisions.approve_auto_eligible(self.session.candidates)
+        self.session.decisions.mark_reviewed(approved, True)
         self._after_decision()
 
     def undo(self) -> None:

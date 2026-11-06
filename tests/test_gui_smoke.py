@@ -584,8 +584,10 @@ def test_redact_everything_asks_first_and_moves_all_to_done(qapp, tmp_path, monk
     tab = window.tabs.widget(0)
     tab.redact_all()
     assert asked, "Redact everything did not ask for confirmation"
-    tab.set_filter("flagged")
-    assert not tab.cards, "items remained in To review"
+    # Strict (0.42.0): the bulk button approves only confirmed items. Every item
+    # still awaiting review stays undecided and is NOT applied.
+    held = tab.session.decisions.awaiting_review(tab.session.candidates)
+    assert all(not tab.session.decisions.is_actionable(c) for c in held)
     window.close()
 
 

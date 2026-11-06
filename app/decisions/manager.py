@@ -29,6 +29,11 @@ class Decision:
     candidate_id: str
     state: DecisionState = DecisionState.UNREVIEWED
     replacement_override: Optional[str] = None
+    #: WHO authorized this (decisions.authorization.AuthOrigin value) and why.
+    #: ACCEPTED alone used to mean both "a person pressed Redact" and "nothing
+    #: objected at registration"; the transformation boundary now needs to know.
+    origin: str = "REVIEW_REQUIRED"
+    reason: str = ""
 
 
 @dataclass
@@ -58,66 +63,69 @@ class DecisionManager:
 
     # -- registration ------------------------------------------------------
 
-    def register(self, candidates: list[Candidate], fail_safe: bool = True) -> None:
-        """Seed decisions for newly detected candidates.
+    def register(self, candidates: list[Candidate], fail_safe: bool = False) -> None:
+        """Seed decisions for newly detected candidates - FAIL CLOSED (0.42.0).
 
-        `fail_safe` makes redaction the default for everything found, including
-        low-confidence and flagged items. For a tool whose job is de-identifying
-        documents before they leave the firm, a false positive costs a
-        pseudonymised business fact; a false negative leaks a client. The review
-        queue therefore asks "should any of these be KEPT?", not "should these
-        be removed?".
+        The one authorization policy (decisions/authorization.py) decides: a
+        candidate it auto-approves is ACCEPTED with origin AUTO_APPROVED; every
+        other one waits (SKIPPED, origin REVIEW_REQUIRED) - readable, listed with
+        the reason, until a person presses Redact, Keep or Edit.
+
+        `fail_safe=True` used to make redaction the default for everything found,
+        including flagged and low-confidence items. It is accepted for backward
+        compatibility but no longer widens anything: no flag may approve what the
+        policy does not.
         """
-        from ..detection.types import Source
+        from .authorization import AuthOrigin, assess, confirmed_name_words
 
+        words = confirmed_name_words(candidates)
         for c in candidates:
             if c.id in self.decisions:
                 continue
-            from ..detection.types import PiiType
-
-            label_bound = any(e.detail.startswith("value of the labelled field") for e in c.evidence)
-            if getattr(c, "ambiguous", False) and c.source is not Source.MANUAL and not label_bound:
-                # A registered person's name component in a context that may
-                # mean someone or something else. Only confirmed PII is applied
-                # automatically; this waits, listed, for a person to decide.
-                state = DecisionState.SKIPPED
-            elif c.pii_type is PiiType.ORG_PRIVATE and c.source is not Source.MANUAL:
-                # Owner's rule (0.41.0): organization and employer names are not
-                # PII. Detected and listed, never replaced unless a person says so.
-                c.needs_review = True
-                if "organization" not in (c.review_reason or ""):
+            verdict = assess(c, words)
+            if verdict.eligible:
+                state, origin = DecisionState.ACCEPTED, AuthOrigin.AUTO_APPROVED
+            else:
+                state, origin = DecisionState.SKIPPED, AuthOrigin.REVIEW_REQUIRED
+                if c.pii_type is PiiType.ORG_PRIVATE and "organization" not in (c.review_reason or ""):
                     c.review_reason = ((c.review_reason + "; ") if c.review_reason else "") + \
                         "organization or employer name - kept unless you choose to replace it"
-                state = DecisionState.SKIPPED
-            elif (
-                c.pii_type is PiiType.UNCLASSIFIED_GROUP_VALUE
-                and c.source is not Source.MANUAL
-            ):
-                # Nothing could say what this is, so nothing will replace it
-                # until the user names it. It waits in Unlabelled.
-                state = DecisionState.SKIPPED
-            # A finding from the review model (Source.AUDIT) is NOT special-
-            # cased any more. It used to wait for a decision, because applying
-            # model suggestions unasked once replaced text that was not PII.
-            # The owner decided it should be redacted AND flagged: it is
-            # applied by default and stays in the review list (needs_review is
-            # always set on it), so the reviewer's question is "should this be
-            # KEPT?", exactly as for every other flagged item. What still
-            # waits is what already waited for every source: a value nothing
-            # could TYPE (above) and one without enough evidence (below).
-            elif (
-                getattr(c, "adjudication", "") == "UNRESOLVED"
-                and c.source is not Source.MANUAL
-            ):
-                # Broadens type-or-skip: a candidate can have a KNOWN type
-                # and still have too little aggregated evidence to trust
-                # automatically. Same failure mode as UNCLASSIFIED - a wrong
-                # guess costs a leaked or corrupted value - so it gets the
-                # same treatment: wait for a decision, never auto-applied.
-                state = DecisionState.SKIPPED
-            else:
-                state = DecisionState.ACCEPTED if fail_safe else DecisionState.UNREVIEWED
-            self.decisions[c.id] = Decision(candidate_id=c.id, state=state)
+                c.needs_review = True
+                if not c.review_reason:
+                    c.review_reason = verdict.reason
+            self.decisions[c.id] = Decision(candidate_id=c.id, state=state,
+                                            origin=origin.value, reason=verdict.reason)
+
+    def origin(self, candidate: Candidate) -> str:
+        d = self.decisions.get(candidate.id)
+        return d.origin if d else "REVIEW_REQUIRED"
+
+    def awaiting_review(self, candidates: list[Candidate]) -> list[Candidate]:
+        """Review-required items no person has decided yet (left readable)."""
+        return [c for c in candidates if self.origin(c) == "REVIEW_REQUIRED"]
+
+    def approve_auto_eligible(self, candidates: list[Candidate]) -> list[Candidate]:
+        """The ONLY bulk approval: what the policy itself auto-approves.
+
+        CLI --accept-all, the batch "process all" and the GUI "Redact everything"
+        used to mark EVERY candidate ACCEPTED - flagged, ambiguous and held items
+        included. A bulk action is not a per-item human judgement; review-required
+        items stay pending."""
+        from .authorization import AuthOrigin, assess, confirmed_name_words
+
+        words = confirmed_name_words(candidates)
+        approved = []
+        for c in candidates:
+            if assess(c, words).eligible and self.state(c) is not DecisionState.ACCEPTED:
+                approved.append(c)
+        if approved:
+            self._snapshot([c.id for c in approved])
+            for c in approved:
+                d = self.decisions.setdefault(c.id, Decision(candidate_id=c.id))
+                d.state, d.origin, d.reason = DecisionState.ACCEPTED, AuthOrigin.AUTO_APPROVED.value, \
+                    "approved in bulk: the policy auto-approves it"
+            self._notify()
+        return approved
 
     # -- queries -----------------------------------------------------------
 
@@ -160,11 +168,18 @@ class DecisionManager:
         state: DecisionState,
         replacement: Optional[str] = None,
     ) -> None:
+        """An explicit decision by a PERSON (the UI, a test standing in for one).
+        Records the user as the authorizing origin."""
         ids = [c.id for c in candidates]
         self._snapshot(ids)
+        origin = {DecisionState.ACCEPTED: "USER_APPROVED", DecisionState.EDITED: "USER_EDITED",
+                  DecisionState.SKIPPED: "USER_KEPT", DecisionState.MANUALLY_ADDED: "USER_ADDED",
+                  DecisionState.UNREVIEWED: "REVIEW_REQUIRED"}[state]
         for c in candidates:
             d = self.decisions.setdefault(c.id, Decision(candidate_id=c.id))
             d.state = state
+            d.origin = origin
+            d.reason = "decided by the user"
             if replacement is not None:
                 d.replacement_override = replacement
         self._notify()
@@ -185,6 +200,8 @@ class DecisionManager:
             c
             for c in all_candidates
             if c.pii_type is like.pii_type and c.normalized.lower() == like.normalized.lower()
+            # Approving one occurrence never approves one whose context is unclear.
+            and (c is like or state is DecisionState.SKIPPED or not getattr(c, "ambiguous", False))
         ]
         self.set_state(matches, state)
         return matches
@@ -211,7 +228,9 @@ class DecisionManager:
         targets = {c.id: c for c in index.linked(like)}
         for c in extra or []:
             targets[c.id] = c
-        found = list(targets.values())
+        found = [c for c in targets.values()
+                 if c is like or c.id == like.id or state is DecisionState.SKIPPED
+                 or not getattr(c, "ambiguous", False)]
         if state is DecisionState.EDITED and replacement:
             self._snapshot([c.id for c in found])
             profile = index.entity_of(like)
@@ -219,6 +238,7 @@ class DecisionManager:
             for c in found:
                 d = self.decisions.setdefault(c.id, Decision(candidate_id=c.id))
                 d.state = state
+                d.origin, d.reason = "USER_EDITED", "edited by the user"
                 d.replacement_override = compose_replacement(replacement, c.text, context)
             self._notify()
         else:
@@ -228,7 +248,8 @@ class DecisionManager:
     def add_manual(self, candidate: Candidate) -> None:
         self._snapshot([candidate.id])
         self.decisions[candidate.id] = Decision(
-            candidate_id=candidate.id, state=DecisionState.MANUALLY_ADDED
+            candidate_id=candidate.id, state=DecisionState.MANUALLY_ADDED,
+            origin="USER_ADDED", reason="added by the user",
         )
         self._notify()
 

@@ -282,14 +282,16 @@ class Batch:
         return changed
 
     def redact_everything(self) -> int:
-        from .decisions.manager import DecisionState
+        """Approve, in every document, what the authorization policy auto-approves.
 
+        Fail closed (0.42.0): this used to mark EVERY candidate ACCEPTED, flagged
+        and held items included. Review-required items stay readable until a
+        person decides each one."""
         changed = 0
         for item in self.approved:
             if not item.session:
                 continue
-            item.session.decisions.set_state(item.session.candidates, DecisionState.ACCEPTED)
-            changed += len(item.session.candidates)
+            changed += len(item.session.decisions.approve_auto_eligible(item.session.candidates))
         return changed
 
     def process_approved(

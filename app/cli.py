@@ -72,13 +72,15 @@ def cmd_process(args) -> int:
     _print_findings(session)
 
     if args.accept_all:
-        session.decisions.set_state(session.candidates, DecisionState.ACCEPTED)
-    elif session.needs_review():
+        # Fail closed (0.42.0): a bulk flag approves only what the authorization
+        # policy itself auto-approves. Review-required items stay readable.
+        session.decisions.approve_auto_eligible(session.candidates)
+    pending = session.decisions.awaiting_review(session.candidates)
+    if pending:
         print(
-            f"\n{len(session.needs_review())} item(s) still need review. "
-            "Re-run with --accept-all or use the GUI to decide."
+            f"\n{len(pending)} item(s) need a person's decision and are LEFT READABLE in the "
+            "output. Decide them in the app (Redact / Keep / Edit); no command-line flag approves them."
         )
-        return 2
 
     out = args.output or str(Path(args.input).with_name(session.safe_output_name()))
     if Path(out).resolve() == Path(args.input).resolve():
@@ -117,7 +119,8 @@ def main(argv=None) -> int:
     p_pr = sub.add_parser("process", help="redact, export and verify")
     p_pr.add_argument("input")
     p_pr.add_argument("-o", "--output")
-    p_pr.add_argument("--accept-all", action="store_true", help="accept every detection unreviewed")
+    p_pr.add_argument("--accept-all", action="store_true",
+                      help="approve everything the authorization policy auto-approves (never review-required items)")
     p_pr.add_argument("--no-ner", action="store_true")
     p_pr.set_defaults(func=cmd_process)
 

@@ -164,13 +164,25 @@ def test_processing_only_reviewed_items_leaves_the_rest_alone(batch, tmp_path):
     assert [t.candidate_id for t in plan.targets] == [chosen.id]
 
 
-def test_redact_everything_applies_all_detections(batch):
+def test_redact_everything_never_approves_review_required_items(batch):
+    """'Process all' used to mark EVERY candidate ACCEPTED, flagged and held items
+    included - a bulk bypass of review. It now approves only what the policy
+    auto-approves; review-required items stay readable (0.42.0)."""
+    from app.decisions.authorization import assess, confirmed_name_words
+
     item = batch.analyse(batch.items[0])
     batch.approve(item)
-    changed = batch.redact_everything()
-    assert changed == len(item.session.candidates)
-    plan = item.session.plan()
-    assert len(plan.targets) == len(item.session.candidates)
+    batch.redact_everything()
+    s = item.session
+    words = confirmed_name_words(s.candidates)
+    held = s.decisions.awaiting_review(s.candidates)
+    assert all(not s.decisions.is_actionable(c) for c in held)
+    plan = s.plan()
+    target_ids = {t.candidate_id for t in plan.targets}
+    assert not target_ids & {c.id for c in held}
+    for c in s.candidates:
+        if c.id in target_ids:
+            assert assess(c, words).eligible
 
 
 def test_counts_are_in_distinct_values_not_occurrences(batch):

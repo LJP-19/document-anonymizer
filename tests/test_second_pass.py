@@ -61,12 +61,13 @@ def test_findings_join_the_normal_review_list(tmp_path):
     # candidate's state, which is correct - they are the same item.)
     from app.decisions.manager import DecisionManager
 
-    # One process: these behave like any other detection - redacted by default
-    # and listed for review, not held back in a separate stage.
+    # One process: these join the SAME review list as every other detection.
+    # Flagged, so (0.42.0) they wait for a person like any flagged item.
     fresh = DecisionManager()
     fresh.register(result.findings)
     for finding in result.findings:
-        assert fresh.state(finding) is DecisionState.ACCEPTED
+        assert fresh.origin(finding) == "REVIEW_REQUIRED"
+        assert not fresh.is_actionable(finding)
         assert finding.needs_review, "a late finding should still be flagged"
 
 

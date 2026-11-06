@@ -137,6 +137,10 @@ class Candidate:
     #: when only "Ann Tash" is registered). Reported for review, never applied
     #: automatically (decisions/manager.py).
     ambiguous: bool = False
+    #: VERIFIED label binding (decisions.authorization.annotate_label_binding):
+    #: the value of a recognised, typed identity label that expects this type.
+    #: A bare group_id is not this - it is attached to anything on a value line.
+    label_confirmed: bool = False
 
     @property
     def id(self) -> str:
