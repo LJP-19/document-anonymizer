@@ -538,7 +538,13 @@ _TITLE_WORDS = {"mr", "mrs", "ms", "mx", "dr", "prof", "rev", "hon", "jr", "sr",
 
 
 def _label_bound(c: Candidate) -> bool:
-    return bool(c.group_id) or any(e.detail.startswith("value of the labelled field") for e in c.evidence)
+    """Confirmed by the document's own structure: a field label, a table column
+    header, or (name control) the first letters of a label-confirmed surname."""
+    return bool(c.group_id) or any(
+        e.detail.startswith("value of the labelled field")
+        or (e.detail.startswith("typed ") and " column" in e.detail)
+        or e.detail.startswith("name control (")
+        for e in c.evidence)
 
 
 def _name_tokens(text: str) -> list[str]:

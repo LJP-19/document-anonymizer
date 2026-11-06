@@ -189,3 +189,27 @@ def test_the_false_positive_corpus_has_no_false_positives(tmp_path):
         result = score(src, kept_mask(src, extract_words(out)), geometric_labeller(items))
         assert result.fp == 0, (name, result.as_dict()["by_category"])
         assert result.fn == 0, (name, result.as_dict()["by_category"])
+
+
+def test_two_template_cells_side_by_side_are_a_header_row_not_a_field(tmp_path):
+    """Same-row binding made "(3) Relationship to you" the VALUE of the column
+    header to its left on a blank form - both are template text."""
+    path = _pdf(tmp_path / "hdr.pdf", [(36, 100, "(2) Social security number", "label"),
+                                       (150, 100, "(3) Relationship to you", "label")])
+    s = AnonymizationSession(source_path=path)
+    s.analyse()
+    assert _applied(s) == []
+
+
+def test_structure_confirms_a_value_label_column_or_name_control():
+    from app.detection.protection import _label_bound
+    from app.detection.types import Evidence
+
+    def cand(detail):
+        return Candidate(pii_type=PiiType.PERSON, text="QUIL", page_no=0, rect=(0, 0, 1, 1), line=None,
+                         start=0, end=4, confidence=0.75, source=Source.COVERAGE,
+                         evidence=[Evidence(Source.COVERAGE, detail, 0.75)])
+
+    assert _label_bound(cand("name control (first letters of a known surname) on a scanline"))
+    assert _label_bound(cand("typed PERSON from the 'Employee name' column"))
+    assert not _label_bound(cand("name-shaped line, no model hit"))

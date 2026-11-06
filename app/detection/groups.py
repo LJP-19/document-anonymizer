@@ -180,6 +180,13 @@ def _span_style_at(line: Line, offset: int):
     return None
 
 
+def _is_known_label(text: str, rs, match) -> bool:
+    """A RECOGNISED label (typed or non-PII). A merely label-SHAPED short phrase
+    ("Bela Quell") is not one - that is what a value looks like too."""
+    m = match(text, rs)
+    return bool(m) and (bool(m[0]) or bool(m[1]))
+
+
 def _value_lines_for(
     label: LabelRegion,
     lines_by_page: dict[int, list[Line]],
@@ -232,9 +239,17 @@ def _value_lines_for(
         row.sort(key=lambda ln: ln.bbox[0])
         if row:
             nearest = row[0]
+            from .deterministic import load_rules
+            from .labels import _match_label
+
+            # A filled value is set in a different style from its label; two
+            # template-text cells side by side are a header row ("(2) Social
+            # security number | (3) Relationship to you"), not a field and its value.
             if (nearest.bbox[0] - label_x1 <= 80.0
                     and nearest.key() not in label_keys
                     and nearest.key() not in claimed
+                    and line_style(nearest) != line_style(line)
+                    and not _is_known_label(nearest.text, load_rules(), _match_label)
                     and not (form_styles and in_form_style(nearest, form_styles))):
                 stacked = [nearest]
                 return stacked, inline
