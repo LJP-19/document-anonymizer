@@ -180,6 +180,14 @@ def _span_style_at(line: Line, offset: int):
     return None
 
 
+def _symbol_font(line) -> bool:
+    """Braces, arrows and checkboxes drawn from a symbol/dingbat font ("AdobePiStd",
+    "ZapfDingbats", "Symbol") are page furniture: a 40pt brace beside "Fill in
+    Your Address" was bound as that heading's value."""
+    fonts = " ".join(getattr(span, "font", "") or "" for span in getattr(line, "spans", []) or []).lower()
+    return any(k in fonts for k in ("pistd", "dingbat", "symbol", "wingding", "zapf"))
+
+
 def _is_known_label(text: str, rs, match) -> bool:
     """A RECOGNISED label (typed or non-PII). A merely label-SHAPED short phrase
     ("Bela Quell") is not one - that is what a value looks like too."""
@@ -249,6 +257,8 @@ def _value_lines_for(
                     and nearest.key() not in label_keys
                     and nearest.key() not in claimed
                     and line_style(nearest) != line_style(line)
+                    and sum(ch.isalnum() for ch in nearest.text) >= 2
+                    and not _symbol_font(nearest)
                     and not _is_known_label(nearest.text, load_rules(), _match_label)
                     and not (form_styles and in_form_style(nearest, form_styles))):
                 stacked = [nearest]

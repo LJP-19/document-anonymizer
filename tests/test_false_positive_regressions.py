@@ -213,3 +213,15 @@ def test_structure_confirms_a_value_label_column_or_name_control():
     assert _label_bound(cand("name control (first letters of a known surname) on a scanline"))
     assert _label_bound(cand("typed PERSON from the 'Employee name' column"))
     assert not _label_bound(cand("name-shaped line, no model hit"))
+
+
+def test_a_symbol_glyph_beside_a_heading_is_not_its_value():
+    """A 40pt brace from a symbol font (AdobePiStd) sat to the right of "Fill in
+    Your Address" and was bound - and replaced - as that heading's ADDRESS value.
+    (PyMuPDF merges a synthetic brace into the heading's own line, so this pins
+    the guard on the real font name; the real-return QA run covers the page.)"""
+    from app.detection.groups import _symbol_font
+
+    assert _symbol_font(NS(spans=[NS(font="AdobePiStd")]))
+    assert _symbol_font(NS(spans=[NS(font="ZapfDingbats")]))
+    assert not _symbol_font(NS(spans=[NS(font="Courier")]))
