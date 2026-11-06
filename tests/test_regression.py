@@ -268,10 +268,12 @@ def test_skip_preserves_the_value(pdfs, tmp_path):
 def test_apply_to_all_and_undo(pdfs):
     s = analysed(pdfs["paragraph"])
     target = next(c for c in s.candidates if c.pii_type is PiiType.PERSON)
+    s.decisions.set_state([target], DecisionState.ACCEPTED)
+    before = s.decisions.state(target)
     changed = s.decisions.apply_to_all(s.candidates, target, DecisionState.SKIPPED)
     assert changed and all(s.decisions.state(c) is DecisionState.SKIPPED for c in changed)
     assert s.decisions.undo()
-    assert s.decisions.state(target) is not DecisionState.SKIPPED
+    assert s.decisions.state(target) is before
 
 
 def test_edit_replacement_is_used(pdfs, tmp_path):

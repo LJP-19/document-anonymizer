@@ -75,10 +75,19 @@ class DecisionManager:
                 continue
             from ..detection.types import PiiType
 
-            if getattr(c, "ambiguous", False) and c.source is not Source.MANUAL:
+            label_bound = any(e.detail.startswith("value of the labelled field") for e in c.evidence)
+            if getattr(c, "ambiguous", False) and c.source is not Source.MANUAL and not label_bound:
                 # A registered person's name component in a context that may
                 # mean someone or something else. Only confirmed PII is applied
                 # automatically; this waits, listed, for a person to decide.
+                state = DecisionState.SKIPPED
+            elif c.pii_type is PiiType.ORG_PRIVATE and c.source is not Source.MANUAL:
+                # Owner's rule (0.41.0): organization and employer names are not
+                # PII. Detected and listed, never replaced unless a person says so.
+                c.needs_review = True
+                if "organization" not in (c.review_reason or ""):
+                    c.review_reason = ((c.review_reason + "; ") if c.review_reason else "") + \
+                        "organization or employer name - kept unless you choose to replace it"
                 state = DecisionState.SKIPPED
             elif (
                 c.pii_type is PiiType.UNCLASSIFIED_GROUP_VALUE

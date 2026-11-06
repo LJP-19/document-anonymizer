@@ -8,7 +8,13 @@ from app.detection.heuristics import looks_like_person
 from app.entities.registry import EntityRegistry
 from app.detection.types import PiiType
 from app.pseudonymization.names import NameRegistry
-from tests.helpers_text import redacted
+from tests.helpers_text import analysed, redacted
+
+
+def _found(text):
+    """(text, type, applied?) of every PERSON/place candidate the detectors found."""
+    _doc, result, decisions = analysed(text)
+    return [(c.text, c.pii_type.name, decisions.is_actionable(c)) for c in result.candidates]
 
 NAMES = [
     "José Núñez", "Élodie Martin", "Łukasz Kowalski", "Nguyễn Văn Minh", "Sławomir Nowak",
@@ -25,10 +31,14 @@ def test_a_labelled_name_in_any_script_is_redacted_as_a_person(template, name):
 
 
 @pytest.mark.parametrize("name", NAMES)
-def test_an_unlabelled_name_line_is_redacted_as_a_person(name):
-    got = redacted(f"{name}\nMain Street 4")
-    hits = [(t, k) for t, k in got if "Main" not in t]
-    assert hits and all(k == "PERSON" for _t, k in hits), got
+def test_an_unlabelled_name_line_is_found_as_a_person_and_held(name):
+    """Strict PII-only (0.41.0): a name alone on a line with NO label is a model's
+    proposal. It is found and typed PERSON in any script - and held for review,
+    not applied, because nothing confirms it (owner's rule)."""
+    got = _found(f"{name}\nMain Street 4")
+    hits = [(t, k, applied) for t, k, applied in got if "Main" not in t]
+    assert hits and all(k == "PERSON" for _t, k, _a in hits), got
+    assert not any(applied for _t, _k, applied in hits), got
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -66,5 +76,5 @@ def test_a_single_caseless_character_is_a_name_not_an_initial():
 
 
 def test_a_block_of_only_non_latin_text_is_not_skipped_as_numbers_only():
-    got = redacted("李伟\n85,000")
-    assert ("李伟", "PERSON") in got
+    got = _found("李伟\n85,000")
+    assert ("李伟", "PERSON") in [(t, k) for t, k, _a in got]

@@ -212,6 +212,10 @@ def identify_subjects(
     for candidate in candidates:
         if candidate.pii_type not in PROPAGATED_TYPES:
             continue
+        if getattr(candidate, "ambiguous", False) and not candidate.group_id:
+            # Held for review is not confirmed: a guess must never become a
+            # subject and spread to every page as an applied replacement.
+            continue
         value = candidate.normalized
         group = by_group.get(candidate.group_id) if candidate.group_id else None
         if len(value) < MIN_PROPAGATION_LENGTH and not _short_name_ok(candidate, group):
@@ -231,7 +235,11 @@ def identify_subjects(
             and not group.label.non_pii
         )
         primary = typed_field or bool(group and PRIMARY_LABEL.search(group.label.text))
-        strong = candidate.confidence >= 0.85
+        # Strict PII-only (0.41.0): only a LABEL or a deterministic identifier
+        # rule makes a subject. A confident model guess used to qualify too, and a
+        # wrong one ("Hunter", a fund name) then spread to every page as a
+        # confirmed entity.
+        strong = candidate.confidence >= 0.85 and candidate.source is Source.REGEX
 
         if not (primary or strong):
             continue

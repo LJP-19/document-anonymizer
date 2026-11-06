@@ -42,6 +42,9 @@ class Rule:
     context_any: tuple[str, ...] = ()
     context_required: bool = False
     money_guard: bool = False
+    #: Matched with no supporting context, the shape alone is the whole case
+    #: (a bare nine-digit number): held for review, never applied automatically.
+    review_unless_context: bool = False
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,7 @@ def load_rules(path: str = str(RULES_PATH)) -> RuleSet:
             context_any=tuple(w.lower() for w in r.get("context_any", [])),
             context_required=bool(r.get("context_required", False)),
             money_guard=bool(r.get("money_guard", False)),
+            review_unless_context=bool(r.get("review_unless_context", False)),
         )
         for r in data.get("rules", [])
     )
@@ -239,8 +243,14 @@ def detect_deterministic(doc: Document, ruleset: Optional[RuleSet] = None) -> li
                         evidence.append(
                             Evidence(Source.REGEX, f"{rule.validator} validation failed", -0.3)
                         )
+                    shape_only = rule.review_unless_context and not has_ctx
+                    if shape_only:
+                        review = True
+                        reason = (f"looks like a {rule.pii_type.value} by shape alone - no label or "
+                                  "context says so; not applied unless you confirm it")
                     out.append(
                         Candidate(
+                            ambiguous=shape_only,
                             pii_type=rule.pii_type,
                             text=m.group(),
                             page_no=page.number,

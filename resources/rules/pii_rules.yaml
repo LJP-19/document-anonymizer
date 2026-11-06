@@ -38,6 +38,10 @@ rules:
     pattern: '(?<![\d\-])\d{9}(?![\d\-])'
     confidence: 0.6
     validator: ssn
+    # Strict PII-only (0.41.0): a bare nine-digit number nobody labelled is held
+    # for review. On real returns it was a software control number on a code
+    # line, printed identically on two different people's returns.
+    review_unless_context: true
 
   - name: ssn_plain
     # Nine digits with no separators. Common in exported data and fillable
@@ -313,7 +317,10 @@ labels:
     expects: [ITIN]
   - pattern: '(tin|taxpayer (identification|id)( number)?|tax id( number)?)'
     expects: [TIN]
-  - pattern: '((business|company|entity|trade|dba|doing business as|legal|firm|employer|payer|payee|partnership|corporation|llc) name)'
+  # The possessive is how forms print it ("Firm's name", "Employer's name"); without
+  # it the generic "...name" PERSON rule claimed the label and a firm's name got a
+  # person's pseudonym (0.41.0).
+  - pattern: '((business|company|entity|trade|dba|doing business as|legal|firm|employer|payer|payee|partnership|corporation|llc)([''’]s)? name)'
     expects: [ORG_PRIVATE]
   - pattern: '(name of (business|company|entity|employer|partnership|corporation|firm))'
     expects: [ORG_PRIVATE]

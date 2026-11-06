@@ -228,6 +228,9 @@ class AnonymizationSession:
 
             gated, gate_log = CandidateGate(self.detection.protection).run(added)
             self.detection.gate_log.extend(gate_log)
+            from .detection.protection import confirmed_name_tokens, hold_unconfirmed_proposals
+
+            gated, _held = hold_unconfirmed_proposals(gated, confirmed_name_tokens(self.detection.candidates))
             refused = len(added) - len(gated)
             added = gated
             if refused:

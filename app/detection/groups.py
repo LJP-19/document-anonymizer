@@ -215,8 +215,31 @@ def _value_lines_for(
             ):
                 inline = None
 
-    # Case B: value(s) stacked underneath the label.
+    # Case C: the value is a SEPARATE line object to the right on the same row -
+    # "Spouse's name    Bela Quell", "Filing status    MFJ". Extraction often
+    # splits a row into two Line objects; neither Case A nor the stacking below
+    # saw the value, so it was left to model guesses (a wrong type, or none).
     stacked: list[Line] = []
+    if inline is None and not remainder.strip():
+        label_x1 = label.rect[2] if label.rect else line.bbox[2]
+        mid = (line.bbox[1] + line.bbox[3]) / 2
+        row = [
+            other for other in lines_by_page.get(line.page_no, [])
+            if other is not line and other.bbox[0] >= label_x1 - 0.5
+            and other.bbox[1] <= mid <= other.bbox[3]
+            and other.text.strip()
+        ]
+        row.sort(key=lambda ln: ln.bbox[0])
+        if row:
+            nearest = row[0]
+            if (nearest.bbox[0] - label_x1 <= 80.0
+                    and nearest.key() not in label_keys
+                    and nearest.key() not in claimed
+                    and not (form_styles and in_form_style(nearest, form_styles))):
+                stacked = [nearest]
+                return stacked, inline
+
+    # Case B: value(s) stacked underneath the label.
     if inline is None:
         siblings = lines_by_page.get(line.page_no, [])
         below = [

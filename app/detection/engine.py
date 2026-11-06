@@ -16,7 +16,7 @@ from .groups import analyse_coverage, build_groups
 from .heuristics import detect_heuristics
 from .ner import detect_ner
 from .resolve import resolve_overlaps, strip_label_overlaps, veto_by_label_geometry
-from .protection import CandidateGate, ProtectionIndex, apply_ai_objections
+from .protection import CandidateGate, ProtectionIndex, apply_ai_objections, drop_prior_replacements, hold_unconfirmed_proposals
 from .types import Candidate, DetectionResult, Evidence, PiiType, Source
 
 log = logging.getLogger(__name__)
@@ -295,6 +295,13 @@ def _drop_implausible_model_hits(candidates: list, form_words: set = frozenset()
                     and any(w.strip(".,") in _LANDMARK_WORDS for w in bare.split())):
                 continue  # "the Corin River Trail" is a public landmark, not an address
             if c.pii_type is PiiType.PERSON and c.line is not None and _code_line(c.line.text):
+                continue
+            token = c.text.strip(" .,;:()")
+            if (c.pii_type in (PiiType.PERSON, PiiType.ORG_PRIVATE) and token.isalpha() and token.isupper()
+                    and len(token) <= 3):
+                # A lone all-caps code ("MFJ", "HOH", "IRA", "SEP") is a form
+                # abbreviation, not a name. A short surname in a name FIELD
+                # arrives through its label (group), which this does not touch.
                 continue
             words = [w.strip(".,;:()[]'\"\u2019").lower() for w in c.text.split()]
             if (form_words and c.pii_type in (PiiType.PERSON, PiiType.ORG_PRIVATE)
@@ -1030,6 +1037,9 @@ def analyse(
     # once. The unified gate at the end of the pipeline (and on every later path
     # that adds candidates) answers to this, not to seven separate passes.
     protection = ProtectionIndex.build(doc, labels, form_text, groups)
+    candidates, prior = drop_prior_replacements(candidates, protection)
+    if prior:
+        log.debug("left %d candidate(s) on text an earlier run already replaced", prior)
 
     # Anything the model confidently called a business fact stays in the document.
     candidates = _veto(candidates, negatives, groups)
@@ -1160,6 +1170,10 @@ def analyse(
     # The authority: whatever any layer proposed, nothing protected is redacted,
     # nothing is clipped short of its real value, and every outcome has a reason.
     candidates, gate_log = CandidateGate(protection).run(candidates)
+    # Strict PII-only: a proposal nothing corroborates is held for review.
+    candidates, held = hold_unconfirmed_proposals(candidates)
+    if held:
+        log.debug("held %d unconfirmed proposal(s) for review", held)
     rejected_by_gate = sum(1 for d in gate_log if d.action == "reject")
     if rejected_by_gate:
         log.debug("gate rejected %d candidate(s) on protected text", rejected_by_gate)
