@@ -13,8 +13,9 @@
 #   APPLE_TEAM_ID                10-character team id
 #
 # With ALL six set: inside-out codesign with the hardened runtime, DMG signed,
-# notarized (notarytool --wait), stapled, verified -> signing=SIGNED_NOTARIZED.
-# With ANY missing: an UNSIGNED DMG, named ...-UNSIGNED.dmg, signing=UNSIGNED,
+# notarized (notarytool --wait), stapled, verified -> ...-SIGNED-NOTARIZED.dmg too.
+# The ...-UNSIGNED.dmg is ALWAYS built (from the app before signing). With ANY
+# secret missing it is the only DMG, signing=UNSIGNED,
 # and the missing secret NAMES are listed. Ad-hoc signing is never used as a
 # substitute and nothing is described as notarized unless notarytool accepted it.
 set -euo pipefail
@@ -41,14 +42,17 @@ make_dmg() {
   rm -rf "$staging"
 }
 
+# The UNSIGNED DMG is always built, from the app BEFORE any signing.
+UNSIGNED_DMG="$OUT/DocumentAnonymizer-v${VERSION}-macOS-${ARCH}-UNSIGNED.dmg"
+make_dmg "$UNSIGNED_DMG"
+out_var dmg_unsigned "$UNSIGNED_DMG"
+
 if [ ${#missing[@]} -gt 0 ]; then
-  echo "::warning::macOS signing secrets not configured (${missing[*]}). Building an UNSIGNED development DMG."
+  echo "::warning::macOS signing secrets not configured (${missing[*]}). Only the UNSIGNED DMG is built."
   echo "::warning::An UNSIGNED DMG is NOT notarized and macOS Gatekeeper will block it on other Macs."
-  DMG="$OUT/DocumentAnonymizer-v${VERSION}-macOS-${ARCH}-UNSIGNED.dmg"
-  make_dmg "$DMG"
   out_var signing UNSIGNED
   out_var missing_secrets "${missing[*]}"
-  out_var dmg "$DMG"
+  out_var dmg_signed ""
   exit 0
 fi
 
@@ -77,7 +81,7 @@ done < <(find "$APP/Contents" -type f \( -name "*.dylib" -o -name "*.so" -o -per
 sign "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
-DMG="$OUT/DocumentAnonymizer-v${VERSION}-macOS-${ARCH}.dmg"
+DMG="$OUT/DocumentAnonymizer-v${VERSION}-macOS-${ARCH}-SIGNED-NOTARIZED.dmg"
 make_dmg "$DMG"
 codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$DMG"
 
@@ -97,4 +101,4 @@ xcrun stapler validate "$DMG"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
 out_var signing SIGNED_NOTARIZED
 out_var missing_secrets ""
-out_var dmg "$DMG"
+out_var dmg_signed "$DMG"

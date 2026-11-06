@@ -309,29 +309,35 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash installer/macos/sign_and_package.sh dist/DocumentAnonymizer.app "$VERSION" arm64 out
-      - name: Mount the DMG, copy the app out, launch the COPIED app
+      - name: Mount each DMG, copy the app out, launch the COPIED app
         run: |
-          dmg="${{ steps.pkg.outputs.dmg }}"
-          mnt=$(hdiutil attach "$dmg" -nobrowse -readonly | tail -1 | awk -F'\t' '{print $NF}')
-          echo "mounted at: $mnt"
-          test -d "$mnt/DocumentAnonymizer.app"
-          test -L "$mnt/Applications"
-          dest="$RUNNER_TEMP/Applications"; mkdir -p "$dest"
-          cp -R "$mnt/DocumentAnonymizer.app" "$dest/"
-          hdiutil detach "$mnt"
-          if [ "${{ steps.pkg.outputs.signing }}" = "SIGNED_NOTARIZED" ]; then
-            codesign --verify --deep --strict --verbose=2 "$dest/DocumentAnonymizer.app"
-            spctl --assess --type execute --verbose=2 "$dest/DocumentAnonymizer.app"
-          fi
-          "$dest/DocumentAnonymizer.app/Contents/MacOS/DocumentAnonymizer" --self-test
+          check() {
+            dmg="$1"
+            mnt=$(hdiutil attach "$dmg" -nobrowse -readonly | tail -1 | awk -F'\t' '{print $NF}')
+            echo "mounted $dmg at: $mnt"
+            test -d "$mnt/DocumentAnonymizer.app"
+            test -L "$mnt/Applications"
+            dest="$RUNNER_TEMP/Applications-$2"; rm -rf "$dest"; mkdir -p "$dest"
+            cp -R "$mnt/DocumentAnonymizer.app" "$dest/"
+            hdiutil detach "$mnt"
+            if [ "$2" = "signed" ]; then
+              codesign --verify --deep --strict --verbose=2 "$dest/DocumentAnonymizer.app"
+              spctl --assess --type execute --verbose=2 "$dest/DocumentAnonymizer.app"
+            fi
+            "$dest/DocumentAnonymizer.app/Contents/MacOS/DocumentAnonymizer" --self-test
+          }
+          check "${{ steps.pkg.outputs.dmg_unsigned }}" unsigned
+          if [ -n "${{ steps.pkg.outputs.dmg_signed }}" ]; then check "${{ steps.pkg.outputs.dmg_signed }}" signed; fi
       - name: Size check (GitHub release size limit) and checksum
         run: |
-          f="${{ steps.pkg.outputs.dmg }}"
-          size=$(stat -f%z "$f")
-          echo "dmg: $f ($size bytes) signing=${{ steps.pkg.outputs.signing }}"
-          if [ "$size" -ge 2147483648 ]; then echo "::error::over GitHub's 2 GB release-asset limit"; exit 1; fi
-          (cd out && shasum -a 256 "$(basename "$f")" > "$(basename "$f").sha256")
-          cat out/*.sha256
+          cd out
+          for f in *.dmg; do
+            size=$(stat -f%z "$f")
+            echo "dmg: $f ($size bytes)"
+            if [ "$size" -ge 2147483648 ]; then echo "::error::$f is over GitHub's 2 GB release-asset limit"; exit 1; fi
+            shasum -a 256 "$f" > "$f.sha256"
+          done
+          cat *.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: macos-dmg
@@ -399,16 +405,16 @@ jobs:
             echo "| Download | Platform |"
             echo "|---|---|"
             for f in *.exe *.dmg; do
-              case "$f" in *.exe) p="Windows 10/11, x64 installer";; *) p="macOS 13+, Apple Silicon (arm64)";; esac
+              case "$f" in *.exe) p="Windows 10/11, x64 installer";; *SIGNED-NOTARIZED*) p="macOS 13+, Apple Silicon (arm64), signed and notarized";; *) p="macOS 13+, Apple Silicon (arm64), UNSIGNED";; esac
               echo "| \`$f\` | $p |"
             done
             echo
             if [ "$SIGNING" = "SIGNED_NOTARIZED" ]; then
-              echo "The macOS DMG is signed with a Developer ID certificate and notarized by Apple."
+              echo "\`-SIGNED-NOTARIZED.dmg\` is signed with a Developer ID certificate and notarized by Apple."
             else
-              echo "**The macOS DMG is UNSIGNED and NOT notarized** (missing secrets: ${MISSING:-unknown})."
-              echo "macOS Gatekeeper will block it on other Macs; see RELEASE_GUIDE.md."
+              echo "**No SIGNED-NOTARIZED DMG in this release**: the Apple signing secrets are not configured (missing: ${MISSING:-unknown})."
             fi
+            echo "\`-UNSIGNED.dmg\` is NOT signed or notarized; macOS Gatekeeper blocks it on other Macs (right-click > Open, or see RELEASE_GUIDE.md)."
             echo "The Windows installer is not code-signed; Windows SmartScreen may warn on first run."
             echo
             echo "Verify downloads against SHA256SUMS.txt. Intel Macs are not supported in this release."
