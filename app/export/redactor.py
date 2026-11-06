@@ -212,12 +212,17 @@ def apply_plan(plan: TransformationPlan, doc: Optional[pymupdf.Document] = None)
 #: A replacement may shrink to this share of the original size on its own
 #: baseline before the boxed fallback below is used.
 BASELINE_MIN_SCALE = 0.8
+#: When a real neighbour (a word or another target) on the same row is what
+#: limits the width, shrinking further on the baseline beats handing over to the
+#: boxed fallback: that path grows the box and drew one replacement on top of the
+#: next on a densely packed row of a real return.
+CROWDED_MIN_SCALE = 0.6
 
 
 def _insert_at_baseline(page: pymupdf.Page, target: Target, page_targets: list, words: list) -> Optional[str]:
     """Write the replacement where the original sat: same x, same baseline,
-    same size (or down to 80%), in red - when it fits before the next word or
-    target on the same row. Returns None to hand over to _insert_replacement.
+    same size (down to 80%, or 60% when a neighbour on the row is the limit), in
+    red - when it fits before the next word or target on the same row. Returns None to hand over to _insert_replacement.
 
     Owner's request (0.40.0): replacements should look like a value entered in
     the field - preserved baseline and alignment, no overlap with neighbouring
@@ -230,7 +235,8 @@ def _insert_at_baseline(page: pymupdf.Page, target: Target, page_targets: list, 
     baseline = target.origin[1]
     if not (y0 - 2 <= baseline <= y1 + 2):
         return None
-    limit = page.rect.x1 - 2
+    edge = page.rect.x1 - 2
+    limit = edge
     for w in words:
         wx0, wy0, wx1, wy1 = w[:4]
         if wx0 >= x1 - 0.5 and wy0 < y1 - 1 and wy1 > y0 + 1:
@@ -245,7 +251,8 @@ def _insert_at_baseline(page: pymupdf.Page, target: Target, page_targets: list, 
     fontname = _safe_font(target.font_name, getattr(target, "font_flags", 0))
     size = max(target.font_size, MIN_FONT_SIZE)
     current = size
-    while current >= max(MIN_FONT_SIZE, size * BASELINE_MIN_SCALE) - 1e-6:
+    floor_scale = CROWDED_MIN_SCALE if limit < edge else BASELINE_MIN_SCALE
+    while current >= max(MIN_FONT_SIZE, size * floor_scale) - 1e-6:
         if pymupdf.get_text_length(target.replacement, fontname=fontname, fontsize=current) <= width_available:
             page.insert_text((x0, baseline), target.replacement, fontsize=current,
                              fontname=fontname, color=target.color)

@@ -365,3 +365,35 @@ def test_F_a_street_keeps_its_house_number_shape(value):
             out = generate(t, value, scope=scope)
             number = out.split()[0]
             assert number.isdigit() and len(number) == want and number[0] != "0", (t, out)
+
+
+def test_I_a_crowded_row_shrinks_on_the_baseline_instead_of_overlapping():
+    """A replacement needing ~75% of its size to fit before the next target used
+    to fall to the boxed fallback, which grew upward and drew it over the
+    neighbouring replacement (page 73 of a real return). It now stays on the
+    baseline, smaller, and ends before the next target."""
+    from types import SimpleNamespace as NS
+
+    import pymupdf
+
+    from app.export.redactor import _insert_at_baseline
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    width = pymupdf.get_text_length("Arlo Venn Pallas", fontname="helv", fontsize=9)
+    first = NS(rect=(100, 100, 100 + width * 0.75, 112), origin=(100, 109), replacement="Arlo Venn Pallas",
+               font_size=9, font_name="Helvetica", font_flags=0, color=(1, 0, 0))
+    second = NS(rect=(100 + width * 0.75 + 4, 100, 260, 112), origin=(0, 109), replacement="x",
+                font_size=9, font_name="Helvetica", font_flags=0, color=(1, 0, 0))
+    assert _insert_at_baseline(page, first, [first, second], []) == "shrunk"
+    spans = [s for b in page.get_text("dict")["blocks"] for l in b.get("lines", []) for s in l["spans"]]
+    placed = [s for s in spans if s["text"] == "Arlo Venn Pallas"][0]
+    assert placed["bbox"][2] <= second.rect[0], "must end before the next target"
+    assert abs(placed["origin"][1] - 109) < 0.5, "must stay on the original baseline"
+    assert placed["size"] >= 9 * 0.6 - 0.01
+
+    # With no neighbour limiting it, the 80% floor still applies and a value that
+    # cannot fit hands over to the boxed fallback (None), as before.
+    lonely = NS(rect=(100, 200, 110, 212), origin=(100, 209), replacement="A much longer synthetic value " * 30,
+                font_size=9, font_name="Helvetica", font_flags=0, color=(1, 0, 0))
+    assert _insert_at_baseline(page, lonely, [lonely], []) is None
