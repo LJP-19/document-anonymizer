@@ -215,8 +215,14 @@ def test_a_line_of_key_value_pairs_is_not_a_table_header():
     """"Date of birth 11/02/1979   Nationality: Brazil" has two labels on one line, but
     it is not a header row; treating it as one typed "Badge no. 77231" as a DOB."""
     got = dict(redacted("Date of birth 11/02/1979   Nationality: Brazil\nBorn in: Recife\nBadge no. 77231"))
-    assert got.get("77231") == "EMPLOYEE_ID", got
     assert got.get("11/02/1979") == "DOB"
+    # "Badge no." is not a recognised label. The employee-id rule types the value;
+    # whether it is APPLIED depends on whether another detector disagrees (GLiNER
+    # does, in CI) - conflicting evidence waits for review (0.42.0). Either way it
+    # must never be typed as a DOB by a mistaken header row.
+    _doc, result, _dm = analysed("Date of birth 11/02/1979   Nationality: Brazil\nBorn in: Recife\nBadge no. 77231")
+    types = {c.pii_type.name for c in result.candidates if c.text == "77231"}
+    assert "EMPLOYEE_ID" in types and "DOB" not in types, types
 
 
 def test_a_real_header_row_still_types_its_columns(tmp_path):

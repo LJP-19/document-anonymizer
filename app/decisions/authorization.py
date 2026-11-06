@@ -89,6 +89,7 @@ LABEL_RESOLVABLE_DOUBTS = (
     "a known person's name, typed as a place by the model",
     "low model confidence",
     "low presidio confidence",
+    "the model called this an address, but it has no number",
     # Two detectors typed the same span differently, and the verified label of
     # the winner's type settles it ("Account Number: 123456789" - bank account,
     # not the SSN its shape also fits).
