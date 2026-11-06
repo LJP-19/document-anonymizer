@@ -19,9 +19,9 @@ held, listed and left readable.
 
 | Measure | v0.38.2 | 0.39.0 | 0.40.0 |
 |---|---:|---:|---:|
-| Real samples, precision / recall / F1 | 0.444 / 0.850 / 0.583 | 0.888 / 0.897 / 0.892 | @REAL@ |
-| Real samples, wrongly redacted / missed words | 2873 / 405 | 306 / 277 | @FPFN@ |
-| Synthetic form corpus, precision / recall / F1 | 0.825 / 0.871 / 0.848 | 1.000 / 1.000 / 1.000 | @SYN@ |
+| Real samples, precision / recall / F1 | 0.444 / 0.850 / 0.583 | 0.888 / 0.897 / 0.892 | 0.933 / 0.898 / 0.915 |
+| Real samples, wrongly redacted / missed words | 2873 / 405 | 306 / 277 | 174 / 274 |
+| Synthetic form corpus, precision / recall / F1 | 0.825 / 0.871 / 0.848 | 1.000 / 1.000 / 1.000 | 1.000 / 1.000 / 1.000 |
 
 What changed (durable rules in CLAUDE.md "v0.40.0" sections; tests A-J in
 `tests/test_pseudonymization_identity.py`): name roles learned before generation;
