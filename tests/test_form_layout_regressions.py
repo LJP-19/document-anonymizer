@@ -459,3 +459,28 @@ def test_a_captioned_line_is_the_next_field_not_the_value_above(tmp_path):
     s.process(str(out))
     with pymupdf.open(str(out)) as d:
         assert "Date of Withdrawal" in d[0].get_text()
+
+
+def test_an_if_lead_in_does_not_bury_the_spouse_first_name_label(tmp_path):
+    """Form 1040's "If joint return, spouse's first name and middle initial":
+    three words before the label phrase made the line read as a sentence, so the
+    field had no label and the spouse's name depended on a model guess (the
+    production model missed it on a real return). A real sentence that merely
+    mentions a label word stays a sentence."""
+    rs = load_rules()
+    label = "If joint return, spouse's first name and middle initial"
+    expects, _non_pii, _unknown = _match_label(label, rs)
+    assert PiiType.PERSON in expects
+    sentence = _match_label("Mary Jones opened the account today at noon.", rs)
+    assert sentence is None or not sentence[0], "a sentence must not become a typed label"
+
+    path = _form(tmp_path / "spouse.pdf", [[
+        (36, 100, label, "label"),
+        (300, 100, "Last name", "label"),
+        (36, 114, "BELA", "value"),
+        (300, 114, "TASH", "value"),
+    ]])
+    s = AnonymizationSession(source_path=path)
+    s.analyse()
+    bound = [c for c in s.candidates if c.text.strip() == "BELA"]
+    assert bound and all(c.group_id for c in bound), "the spouse's first name must be bound to its label"

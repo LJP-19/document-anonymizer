@@ -350,3 +350,18 @@ def test_D_a_dependents_column_line_does_not_make_a_surname_a_given_name():
     given.seed_role("Venn", surname=False)
     assert expected.known("Venn") != given.known("Venn")   # the test can tell them apart
     assert reg.known("Venn") == expected.known("Venn"), "the surname must get a surname pseudonym"
+
+
+@pytest.mark.parametrize("value", ["4049 CARIBBEAN CMN", "12 Oak St", "98765 Long Road", "7 Elm Ct"])
+def test_F_a_street_keeps_its_house_number_shape(value):
+    """A 4-digit house number became a 5-digit one with a leading zero on a real
+    return ("4049 ..." -> "08148 ..."). Same digit count, no leading zero."""
+    from app.detection.types import PiiType
+    from app.pseudonymization.generator import generate
+
+    want = len(value.split()[0])
+    for t in (PiiType.STREET, PiiType.ADDRESS):
+        for scope in ("a", "b", "c", "d"):
+            out = generate(t, value, scope=scope)
+            number = out.split()[0]
+            assert number.isdigit() and len(number) == want and number[0] != "0", (t, out)

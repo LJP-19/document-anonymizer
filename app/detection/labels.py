@@ -52,7 +52,15 @@ def _buried(cleaned: str, match) -> bool:
     label, and the client's name in it was never redacted. A real label leads with
     its phrase ("Home address (number and street). If you have ...", "Your first
     name and middle initial"): at most a couple of modifier words come before it."""
-    return len(cleaned.split()) > 4 and len(cleaned[: match.start()].split()) > 2
+    before = cleaned[: match.start()]
+    # A conditional lead-in is form idiom, not prose: "If joint return, spouse's
+    # first name and middle initial". The label phrase leads once the "If ...,"
+    # clause has ended at its comma. Without this the spouse's first-name field
+    # on Form 1040 had no label at all, and the name depended on a model guess.
+    lead_in = re.match(r"^\s*if\b[^,.;:]{0,40},\s*", before, re.I)
+    if lead_in:
+        before = before[lead_in.end():]
+    return len(cleaned.split()) > 4 and len(before.split()) > 2
 
 
 #: A place NAME ending in a label word: "Lakeside City", "SALT LAKE CITY", "Jersey City".

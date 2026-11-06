@@ -100,6 +100,19 @@ def generate_for_household(value: str, household: str, scope: str = "document") 
 NAME_SUFFIX = re.compile(r"\b(jr|sr|ii|iii|iv|md|cpa|esq)\b\.?$", re.I)
 
 
+def _match_house_number(out: str, original: str, fake) -> str:
+    """Keep the original house number's digit count: "4049 MAIN ST" must not
+    become "08148 ...". A 4-digit number gets a 4-digit number, never a leading
+    zero; an original with no leading number is left as generated."""
+    m_orig = re.match(r"^\s*(\d+)\b", original or "")
+    m_out = re.match(r"^(\d+)\b", out)
+    if not m_orig or not m_out:
+        return out
+    n = len(m_orig.group(1))
+    number = str(fake.random_int(1, 9)) + (fake.numerify("#" * (n - 1)) if n > 1 else "")
+    return number + out[m_out.end():]
+
+
 def generate(pii_type: PiiType, value: str, scope: str = "document") -> str:
     """Return a stable pseudonym for `value` of type `pii_type`."""
     seed = _seed(scope, pii_type, value)
@@ -115,7 +128,8 @@ def generate(pii_type: PiiType, value: str, scope: str = "document") -> str:
         return _fit_length(options, target)
 
     if pii_type in (PiiType.STREET, PiiType.PO_BOX):
-        return _fit_length([fake.street_address() for _ in range(5)], target)
+        out = _fit_length([fake.street_address() for _ in range(5)], target)
+        return _match_house_number(out, value, fake) if pii_type is PiiType.STREET else out
 
     if pii_type is PiiType.CITY_STATE:
         if "," in value:
@@ -147,7 +161,7 @@ def generate(pii_type: PiiType, value: str, scope: str = "document") -> str:
         if not any(ch.isdigit() for ch in stripped):
             out = _fit_length([fake.city() for _ in range(6)], target)
             return out.upper() if upper else out
-        out = _fit_length([fake.street_address() for _ in range(5)], target)
+        out = _match_house_number(_fit_length([fake.street_address() for _ in range(5)], target), stripped, fake)
         return out.upper() if upper else out
 
     if pii_type is PiiType.POSTAL_CODE:
