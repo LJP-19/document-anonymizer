@@ -16,8 +16,8 @@ from .groups import analyse_coverage, build_groups
 from .heuristics import detect_heuristics
 from .ner import detect_ner
 from .resolve import resolve_overlaps, strip_label_overlaps, veto_by_label_geometry
-from .protection import CandidateGate, ProtectionIndex, apply_ai_objections
-from .types import DetectionResult, Evidence, PiiType, Source
+from .protection import CandidateGate, ProtectionIndex, apply_ai_objections, drop_prior_replacements, hold_unconfirmed_proposals
+from .types import Candidate, DetectionResult, Evidence, PiiType, Source
 
 log = logging.getLogger(__name__)
 
@@ -169,6 +169,271 @@ def _drop_financial_values(candidates: list) -> list:
             continue
         kept.append(candidate)
     return kept
+
+
+_US_STATES_FULL = {
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut", "delaware",
+    "florida", "georgia", "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky",
+    "louisiana", "maine", "maryland", "massachusetts", "michigan", "minnesota", "mississippi",
+    "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey", "new mexico",
+    "new york", "north carolina", "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania",
+    "rhode island", "south carolina", "south dakota", "tennessee", "texas", "utah", "vermont",
+    "virginia", "washington", "west virginia", "wisconsin", "wyoming", "district of columbia",
+}
+
+
+def _drop_bare_states(candidates: list) -> list:
+    """A state on its own identifies nobody (HIPAA Safe Harbor keeps it too).
+
+    A model tagged the "CA" in a State box as a place and it was pseudonymised -
+    on a return that changes which state's law applies. Only a candidate that is
+    NOTHING but a state code or name is dropped; a city/state/ZIP line keeps its
+    state inside the redacted value, and a manual addition always survives.
+    """
+    from .entities_pass import _STATE_CODES
+
+    kept = []
+    for c in candidates:
+        bare = " ".join(c.text.split()).strip(" .,").lower()
+        if c.source is not Source.MANUAL and (bare in _STATE_CODES or bare in _US_STATES_FULL):
+            continue
+        kept.append(c)
+    return kept
+
+
+_DATE_TOKEN = re.compile(r"^(0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])[-/]((?:19|20)\d{2})$")
+_IDENTITY_TYPES = {PiiType.PERSON, PiiType.ADDRESS, PiiType.STREET, PiiType.SSN, PiiType.ITIN}
+
+
+def _dates_beside_identity(doc, candidates: list) -> list:
+    """A date of birth printed with no label, in the filer's identity block.
+
+    Machine-readable state forms print the values only - name, street, ZIP and
+    each filer's date of birth - with no caption at all, so the DOB rule's
+    required "birth" cue can never be there. Measured on a real return: both
+    spouses' dates of birth survived. A line made ONLY of dates whose years are
+    birth-plausible, with no money on it, within a few lines of an identity
+    value already found on the same page, is typed DOB and flagged for review.
+    Transaction and asset dates are recent or sit in tables beside amounts.
+    """
+    import datetime
+
+    from .deterministic import MONEY_RE
+
+    latest = datetime.date.today().year - 14
+    identity = {}
+    for c in candidates:
+        if c.pii_type in _IDENTITY_TYPES:
+            identity.setdefault(c.page_no, []).append(c.rect)
+    if not identity:
+        return []
+    covered = {(c.line.key(), c.start) for c in candidates}
+    out = []
+    for page in doc.pages:
+        rects = identity.get(page.number)
+        if not rects:
+            continue
+        for line in page.lines:
+            tokens = line.text.split()
+            if not tokens or len(tokens) > 3 or MONEY_RE.search(line.text):
+                continue
+            matches = [_DATE_TOKEN.match(t) for t in tokens]
+            if not all(matches) or not all(1900 <= int(m.group(3)) <= latest for m in matches):
+                continue
+            y0, y1 = line.bbox[1], line.bbox[3]
+            if not any(r[1] - 60 <= y0 and y1 <= r[3] + 60 for r in rects):
+                continue
+            pos = 0
+            for tok in tokens:
+                start = line.text.index(tok, pos)
+                pos = start + len(tok)
+                if (line.key(), start) in covered:
+                    continue
+                rect = line.rect_for(start, pos)
+                if rect is None:
+                    continue
+                out.append(Candidate(
+                    pii_type=PiiType.DOB, text=tok, page_no=page.number, rect=rect, line=line,
+                    start=start, end=pos, confidence=0.7, source=Source.REGEX,
+                    evidence=[Evidence(Source.REGEX, "birth-year date beside the filer's identity block", 0.7)],
+                    needs_review=True,
+                    review_reason="a date with a birth-year, printed with the filer's name and address",
+                ))
+    return out
+
+
+_LANDMARK_WORDS = {
+    "river", "trail", "park", "lake", "creek", "mountain", "mount", "bridge", "beach", "bay",
+    "island", "airport", "station", "hall", "museum", "forest", "canyon", "falls", "harbor",
+    "harbour", "reservoir", "monument", "memorial", "stadium", "arena", "plaza", "mall",
+}
+_COUNTRIES = {"u.s.", "us", "usa", "u.s.a.", "united states", "united states of america", "america",
+              "canada", "mexico", "uk", "u.k.", "united kingdom"}
+
+
+def _drop_implausible_model_hits(candidates: list, form_words: set = frozenset()) -> list:
+    """Model-only proposals that cannot be what they are typed as.
+
+    - a "place" of one or two letters ("MM" in "MM/DD/YYYY") or a country
+      ("U.S.") identifies nobody;
+    - a "person" on a machine-read code line (a voucher scanline) - only the
+      name-control rule, which knows the surname, may act there.
+    """
+    from .entities_pass import _code_line
+
+    kept = []
+    for c in candidates:
+        if c.source is Source.COVERAGE and c.group_id is None and c.pii_type in (PiiType.CITY_STATE, PiiType.STREET):
+            bare = " ".join(c.text.split()).strip(" ,;:").lower()
+            if not any(ch.isdigit() for ch in bare) and any(w.strip(".,") in _LANDMARK_WORDS for w in bare.split()):
+                continue  # a second-pass "place" that is a public landmark
+        if c.source is Source.NER and c.group_id is None:
+            bare = " ".join(c.text.split()).strip(" ,;:").lower()
+            if c.pii_type is PiiType.CITY_STATE and (len(bare.replace(".", "")) <= 2 or bare in _COUNTRIES):
+                continue
+            if (c.pii_type in (PiiType.CITY_STATE, PiiType.STREET) and not any(ch.isdigit() for ch in bare)
+                    and any(w.strip(".,") in _LANDMARK_WORDS for w in bare.split())):
+                continue  # "the Corin River Trail" is a public landmark, not an address
+            if c.pii_type is PiiType.PERSON and c.line is not None and _code_line(c.line.text):
+                continue
+            token = c.text.strip(" .,;:()")
+            if (c.pii_type in (PiiType.PERSON, PiiType.ORG_PRIVATE) and token.isalpha() and token.isupper()
+                    and len(token) <= 3):
+                # A lone all-caps code ("MFJ", "HOH", "IRA", "SEP") is a form
+                # abbreviation, not a name. A short surname in a name FIELD
+                # arrives through its label (group), which this does not touch.
+                continue
+            words = [w.strip(".,;:()[]'\"\u2019").lower() for w in c.text.split()]
+            if (form_words and c.pii_type in (PiiType.PERSON, PiiType.ORG_PRIVATE)
+                    and words and all(w in form_words for w in words if w)):
+                continue  # the document's own printed vocabulary
+        kept.append(c)
+    return kept
+
+
+def drop_form_words(candidates: list, form_words: set) -> list:
+    """Person/organisation findings made only of this document's own printed
+    words. Used for second-pass findings, which re-scan the output without
+    layout and so re-propose the same chrome the main pass already rejected."""
+    if not form_words:
+        return candidates
+    kept = []
+    for c in candidates:
+        words = [w.strip(".,;:()[]'\"\u2019").lower() for w in c.text.split()]
+        if (c.source is not Source.MANUAL and c.pii_type in (PiiType.PERSON, PiiType.ORG_PRIVATE)
+                and words and all(w in form_words for w in words if w)):
+            continue
+        kept.append(c)
+    return kept
+
+
+def _drop_numberless_model_streets(candidates: list) -> list:
+    """A street address has a number. spaCy's FAC (building, bridge, trail,
+    airport) is mapped to STREET, so "Jordan River Trail" in a sentence was
+    redacted as somebody's address. A model-only STREET with no digit, not bound
+    by a field label, is a public place and is dropped."""
+    from .heuristics import looks_like_person
+
+    kept = []
+    for c in candidates:
+        if (c.pii_type is PiiType.STREET and c.source in (Source.NER, Source.COVERAGE) and c.group_id is None
+                and not any(ch.isdigit() for ch in c.text)
+                and any(w.strip(".,").lower() in _STREET_WORDS for w in c.text.split())):
+            continue
+        if (c.pii_type is PiiType.STREET and c.source in (Source.NER, Source.COVERAGE) and c.group_id is None
+                and not re.match(r"^\d{1,6}\s", c.text.strip())
+                and not any(w.strip(".,()").lower() in _STREET_WORDS for w in c.text.split())
+                and not looks_like_person(c.text.strip())[0]):
+            continue  # a model "street" with no street word ("(540NR),") is not an address
+        # A name-shaped "place" with no street word ("İpek Yılmaz" tagged FAC
+        # beside "Main Street 4") is left for _retype_name_shaped_places, which
+        # makes it a PERSON - dropping it here lost the name (caught by
+        # test_unicode_names on the production model).
+        kept.append(c)
+    return kept
+
+
+_STREET_WORDS = {
+    "street", "st", "avenue", "ave", "road", "rd", "boulevard", "blvd", "drive", "dr", "lane", "ln",
+    "court", "ct", "way", "circle", "cir", "place", "pl", "terrace", "ter", "parkway", "pkwy",
+    "highway", "hwy", "trail", "trl", "path", "loop", "common", "cmn", "bridge", "tunnel", "park",
+    "square", "sq", "plaza", "row", "walk", "crossing", "pass", "pike", "turnpike", "expressway",
+    "freeway", "building", "tower", "center", "centre", "airport", "station", "hall", "mall",
+}
+
+
+_HONORIFIC = re.compile(r"^(?:dr|mr|mrs|ms|mx|prof|rev|hon|sr|sra|srta)\.?\s+", re.I)
+
+
+_POSSESSIVE = re.compile(r"['\u2019][sS]?$")
+
+
+def _trim_possessives(candidates: list) -> list:
+    """"Quell's account": the name is "Quell"; the "'s" is grammar and stays.
+    Left in the span it became a separate token in the name registry and the
+    person got a SECOND synthetic surname."""
+    from dataclasses import replace
+
+    out = []
+    for c in candidates:
+        if c.pii_type is PiiType.PERSON and c.source is not Source.MANUAL:
+            m = _POSSESSIVE.search(c.text)
+            if m and m.start() > 1:
+                end = c.start + m.start()
+                rect = c.line.rect_for(c.start, end) if c.line is not None else None
+                if rect is not None:
+                    c = replace(c, text=c.text[: m.start()], end=end, rect=rect)
+        out.append(c)
+    return out
+
+
+def _retype_known_name_components(candidates: list) -> list:
+    """A registered person's name word that a MODEL typed as a place or company
+    ("Torvin confirmed ..." tagged GPE) is that person: the field label that
+    established the identity outranks a model's guess about one word."""
+    from dataclasses import replace
+
+    from .textnorm import fold
+
+    known = set()
+    for c in candidates:
+        if c.pii_type is PiiType.PERSON and (c.group_id is not None or c.source in (Source.GROUP, Source.COVERAGE)):
+            known.update(fold(t.strip(".,")) for t in c.text.split() if len(t.strip(".,")) >= 2)
+    out = []
+    for c in candidates:
+        if (c.source is Source.NER and c.group_id is None
+                and c.pii_type in (PiiType.CITY_STATE, PiiType.ORG_PRIVATE, PiiType.STREET)
+                and " " not in c.text.strip() and fold(c.text.strip(".,")) in known):
+            from .entities_pass import _component_context_is_ambiguous
+
+            # The SAME context check propagation applies to a lone component:
+            # "Torvin confirmed ..." is the person, "Torvin River Trail" may not be.
+            unclear = c.line is not None and _component_context_is_ambiguous(c.line.text, c.start, c.end, known)
+            c = replace(c, pii_type=PiiType.PERSON, ambiguous=unclear, needs_review=unclear,
+                        review_reason=("a known person's name word in a context that may mean something else"
+                                       if unclear else ""),
+                        evidence=list(c.evidence) + [Evidence(Source.COVERAGE,
+                                                              "a label-confirmed person's name word", 0.0)])
+        out.append(c)
+    return out
+
+
+def _trim_honorifics(candidates: list) -> list:
+    """"Dr." / "Mr." in front of a name is not identity; redacting it removes
+    meaning ("Dr. X said") and protects nobody. The span starts at the name."""
+    from dataclasses import replace
+
+    out = []
+    for c in candidates:
+        if c.pii_type is PiiType.PERSON and c.source is not Source.MANUAL:
+            m = _HONORIFIC.match(c.text)
+            if m and m.end() < len(c.text):
+                start = c.start + m.end()
+                rect = c.line.rect_for(start, c.end) if c.line is not None else None
+                if rect is not None:
+                    c = replace(c, text=c.text[m.end():], start=start, rect=rect)
+        out.append(c)
+    return out
 
 
 def _type_from_table_columns(doc, candidates: list, ruleset) -> list:
@@ -329,8 +594,22 @@ def _retype_from_labels(candidates: list, groups: list) -> list:
                 )
             )
             candidate.pii_type = expected[0]
+            _clear_type_doubt(candidate)
             break
     return candidates
+
+
+#: Review flags that only express a MODEL's doubt about its own type guess. Once a
+#: field label (or a label-confirmed identity) settles the type, they no longer
+#: apply - a flag that outlives its reason holds a confirmed value for no reason.
+_TYPE_DOUBT_REASONS = ("location entity outside a labelled address group",
+                       "a known person's name, typed as a place by the model")
+
+
+def _clear_type_doubt(candidate) -> None:
+    if candidate.needs_review and (candidate.review_reason or "").strip() in _TYPE_DOUBT_REASONS:
+        candidate.needs_review = False
+        candidate.review_reason = ""
 
 
 #: Words that make text read as a street. A "street address" with no digit and none of
@@ -548,6 +827,11 @@ def _complete_partial_lines(candidates: list, labels: list) -> list:
 
         if widest.pii_type in _Registry.DIGIT_KEYED and not any(ch.isdigit() for ch in leftover):
             continue
+        # The converse: a NAME has no digits. A model's "REV" (PERSON) on the
+        # software footer "REV 04/01/22 TTMac" was widened over the date and
+        # product code and the footer was pseudonymised on every page.
+        if widest.pii_type is PiiType.PERSON and any(ch.isdigit() for ch in leftover):
+            continue
         new_start = min(widest.start, min(remainder))
         new_end = max(widest.end, max(remainder) + 1)
         while new_start in protected and new_start < new_end:
@@ -741,10 +1025,43 @@ def analyse(
     if dropped:
         log.debug("dropped %d candidate(s) sitting on the form's own text", dropped)
 
+    # A name-shaped phrase set in the typeface of the form's own labels is the
+    # form talking ("Presidential Election Campaign"), when - and only when -
+    # this document sets its filled values in a different style.
+    from .layout_style import form_styles, veto_form_styled_proposals
+
+    from .heuristics import looks_like_person
+    from .layout_style import form_vocabulary
+
+    document_form_styles = form_styles(labels, groups)
+    document_form_vocabulary = form_vocabulary(doc, document_form_styles)
+    # Running chrome (a line repeated at the same spot on 3+ pages) is the
+    # document's own text too - a software footer mark tagged PERSON once, at an
+    # unusual spot, was otherwise redacted there and left on 60 other pages.
+    for page in doc.pages:
+        for line in page.lines:
+            if form_text.reason_for(line) == "repeats on every page" and not looks_like_person(line.text)[0]:
+                document_form_vocabulary.update(
+                    w.strip(".,;:()[]'\"\u2019").lower() for w in line.text.split() if w.strip())
+    # Never a word some rule or field label has identified as a VALUE anywhere in
+    # the document: a filer's name printed in a fixed header spot on several
+    # software pages is "repeated", but the same name in the 1040's name box is
+    # label-bound - measured, without this the name was suppressed document-wide.
+    for c in candidates:
+        if c.source in (Source.GROUP, Source.REGEX, Source.MANUAL) or c.group_id is not None:
+            for w in c.text.split():
+                document_form_vocabulary.discard(w.strip(".,;:()[]'\"\u2019").lower())
+    candidates, styled = veto_form_styled_proposals(candidates, document_form_styles)
+    if styled:
+        log.debug("dropped %d name-shaped proposal(s) set in the form's own typeface", styled)
+
     # The protected regions of THIS document - labels, form text, figures - built
     # once. The unified gate at the end of the pipeline (and on every later path
     # that adds candidates) answers to this, not to seven separate passes.
     protection = ProtectionIndex.build(doc, labels, form_text, groups)
+    candidates, prior = drop_prior_replacements(candidates, protection)
+    if prior:
+        log.debug("left %d candidate(s) on text an earlier run already replaced", prior)
 
     # Anything the model confidently called a business fact stays in the document.
     candidates = _veto(candidates, negatives, groups)
@@ -767,6 +1084,9 @@ def analyse(
     propagated = propagate(doc, candidates, subjects)
     if propagated:
         candidates = resolve_overlaps(candidates + propagated)
+    beside = _dates_beside_identity(doc, candidates)
+    if beside:
+        candidates = resolve_overlaps(candidates + beside)
 
     # Pass 7 - LLM audit. Advisory only: everything it names is located in the
     # real text by exact search, then goes through label stripping and overlap
@@ -810,6 +1130,12 @@ def analyse(
                 )
 
     candidates = _drop_label_text(candidates, labels)
+    candidates = _drop_bare_states(candidates)
+    candidates = _drop_numberless_model_streets(candidates)
+    candidates = _drop_implausible_model_hits(candidates, document_form_vocabulary)
+    candidates = _trim_honorifics(candidates)
+    candidates = _trim_possessives(candidates)
+    candidates = _retype_known_name_components(candidates)
     if conservative_mode():
         candidates, held_back = _conservative_filter(candidates)
         if held_back:
@@ -866,6 +1192,15 @@ def analyse(
     # The authority: whatever any layer proposed, nothing protected is redacted,
     # nothing is clipped short of its real value, and every outcome has a reason.
     candidates, gate_log = CandidateGate(protection).run(candidates)
+    # Verified label binding first: the corroboration hold and the authorization
+    # policy both read it, and a bare group id is not proof of a label.
+    from ..decisions.authorization import annotate_label_binding
+
+    annotate_label_binding(candidates, groups)
+    # Strict PII-only: a proposal nothing corroborates is held for review.
+    candidates, held = hold_unconfirmed_proposals(candidates)
+    if held:
+        log.debug("held %d unconfirmed proposal(s) for review", held)
     rejected_by_gate = sum(1 for d in gate_log if d.action == "reject")
     if rejected_by_gate:
         log.debug("gate rejected %d candidate(s) on protected text", rejected_by_gate)
@@ -922,6 +1257,8 @@ def analyse(
         warnings=warnings,
         gate_log=gate_log,
         protection=protection,
+        form_styles=document_form_styles,
+        form_vocabulary=document_form_vocabulary,
         pages_analysed=len(doc.pages) - pages_needing_ocr,
         pages_needing_ocr=pages_needing_ocr,
         confirmed_count=confirmed,

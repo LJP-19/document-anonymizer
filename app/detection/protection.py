@@ -60,6 +60,64 @@ class ProtectionKind(str, Enum):
     RUNNING_HEADER = "RUNNING_HEADER"
     RUNNING_FOOTER = "RUNNING_FOOTER"
     NON_PII_FIELD = "NON_PII_FIELD"
+    PRIOR_REPLACEMENT = "PRIOR_REPLACEMENT"
+
+
+#: The colour this application writes replacement text in (plan.RED, 1.0/0/0).
+REPLACEMENT_RED = 0xFF0000
+
+
+def prior_replacement_runs(line: Line) -> list[tuple[int, int]]:
+    """Character ranges of `line` set in the replacement red.
+
+    Text in that exact colour was written by an earlier run of this application:
+    it is ALREADY a pseudonym. Re-pseudonymizing it protects nothing, and on
+    documents an earlier version processed it is what painted headings and
+    sidebars red - a previous version replaced form wording ("Roth IRA",
+    "Do not write or staple") with names, and a model then read those synthetic
+    names as people. Spaces between red characters belong to the run.
+    """
+    red = {id(ch) for span in getattr(line, "spans", []) or [] if span.color == REPLACEMENT_RED
+           for ch in span.chars}
+    if not red:
+        return []
+    flags = [ch is not None and id(ch) in red for ch in line.offsets]
+    runs, i, n = [], 0, len(flags)
+    while i < n:
+        if not flags[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and (flags[j + 1] or (line.text[j + 1].isspace() and any(flags[j + 2:j + 3]))):
+            j += 1
+        runs.append((i, j + 1))
+        i = j + 1
+    return runs
+
+
+def is_proposal(candidate: Candidate) -> bool:
+    """A model, heuristic or propagation guess - as opposed to a deterministic
+    rule match, a label-bound value or the user's own decision."""
+    if candidate.source in (Source.MANUAL, Source.REGEX):
+        return False
+    if candidate.source is Source.GROUP:
+        return any("joint-name" in e.detail for e in candidate.evidence) and candidate.group_id is None
+    return True
+
+
+def drop_prior_replacements(candidates: list, protection: "ProtectionIndex") -> tuple[list, int]:
+    """Early, before subjects are identified: a proposal touching text an earlier
+    run already replaced never becomes a candidate, so a synthetic name can never
+    enter the entity registry and spread to other pages."""
+    kept, dropped = [], 0
+    for c in candidates:
+        if c.source is not Source.MANUAL:
+            prior = [r for r in protection.explain(c) if r.kind is ProtectionKind.PRIOR_REPLACEMENT]
+            if prior and (is_proposal(c) or any(r.start <= c.start and r.end >= c.end for r in prior)):
+                dropped += 1
+                continue
+        kept.append(c)
+    return kept, dropped
 
 
 #: Business figures and form identifiers: protected as VALUES, never clipped out
@@ -250,6 +308,14 @@ class ProtectionIndex:
                     line.page_no, key, 0, len(text), line.rect_for(0, len(text)), text,
                     kind, f"form text: {reason}", "form_text", strength))
 
+        # Text an earlier run of this application already replaced.
+        for key, line in lines.items():
+            for start, end in prior_replacement_runs(line):
+                index._add(ProtectedRegion(
+                    line.page_no, key, start, end, line.rect_for(start, end), line.text[start:end],
+                    ProtectionKind.PRIOR_REPLACEMENT,
+                    "already replaced by an earlier run (replacement red)", "prior_replacement"))
+
         # Figures and form identifiers, unless they are identity values.
         for key, line in lines.items():
             text = line.text
@@ -394,6 +460,12 @@ class CandidateGate:
             return c, decide("accept", "explicit user decision")
 
         start, end = c.start, c.end
+        prior = [r for r in self.protection.regions_for(c.line)
+                 if r.kind is ProtectionKind.PRIOR_REPLACEMENT and r.overlaps(start, end)]
+        if prior and is_proposal(c):
+            # The proposal's only evidence was synthetic text: what is left of it
+            # after clipping (a neighbouring "Do", "See") is form wording.
+            return None, decide("reject", prior[0].reason, prior[0].kind.value)
         notes: list[str] = []
         soft_conflict: Optional[ProtectedRegion] = None
         for region in sorted(self.protection.regions_for(c.line), key=lambda r: (r.start, r.end)):
@@ -458,3 +530,77 @@ class CandidateGate:
             _note(result, f"flagged: strong evidence over soft protection ({soft_conflict.reason})")
             decision = decide("flag", soft_conflict.reason, soft_conflict.kind.value)
         return result, decision
+
+
+# -- strict PII-only: a proposal is applied only when something corroborates it --
+
+_TITLE_WORDS = {"mr", "mrs", "ms", "mx", "dr", "prof", "rev", "hon", "jr", "sr", "ii", "iii", "iv"}
+
+
+def _label_bound(c: Candidate) -> bool:
+    """Confirmed by the document's own structure: a VERIFIED field label
+    (`label_confirmed`, set by decisions.authorization.annotate_label_binding -
+    a bare group_id is not enough), a table column header, or (name control) the
+    first letters of a label-confirmed surname."""
+    return bool(getattr(c, "label_confirmed", False)) or any(
+        (e.detail.startswith("typed ") and " column" in e.detail)
+        or e.detail.startswith("name control (")
+        for e in c.evidence)
+
+
+def _name_tokens(text: str) -> list[str]:
+    from .textnorm import fold
+
+    out = []
+    for raw in re.split(r"[\s,&]+", text):
+        t = re.sub(r"['’][sS]?$", "", raw.strip(".,;:()[]\"'"))
+        if len(t) < 2 or not any(ch.isalpha() for ch in t) or fold(t) in _TITLE_WORDS or fold(t) in ("and", "or"):
+            continue
+        out.append(fold(t))
+    return out
+
+
+def confirmed_name_tokens(candidates: list) -> set:
+    """Name words of people a LABEL confirmed ("Your first name", "Spouse's name"...)."""
+    tokens: set = set()
+    for c in candidates:
+        if c.pii_type is PiiType.PERSON and _label_bound(c) and not getattr(c, "ambiguous", False):
+            tokens.update(_name_tokens(c.text))
+    return tokens
+
+
+def hold_unconfirmed_proposals(candidates: list, confirmed: Optional[set] = None) -> tuple[list, int]:
+    """Owner's rule (0.41.0): ONLY CONFIRMED PII IS PSEUDONYMIZED AUTOMATICALLY.
+
+    A model, heuristic or pattern PROPOSAL - spaCy/GLiNER/Presidio, the
+    name-shaped-line fallback, the standalone joint-name pattern, a second-pass
+    "still readable" finding - is confirmed only when:
+      * it is the value of a labelled field, or
+      * it is propagation of an entity a label already confirmed, or
+      * it is a person every one of whose name words belongs to a person a
+        label confirmed (the subject's name repeated in a heading or sentence).
+    Anything else is held: listed for review, left readable, never applied.
+    On real returns these unconfirmed guesses were headings ("Qualified
+    Dividends and Capital Gain"), fund names, "Bill", "Hunter" and "Rose Bowl".
+    Nothing is deleted - a reviewer can still apply any of them.
+    """
+    if confirmed is None:
+        confirmed = confirmed_name_tokens(candidates)
+    held = 0
+    for c in candidates:
+        if not is_proposal(c) or _label_bound(c) or getattr(c, "ambiguous", False):
+            continue
+        if c.source is Source.COVERAGE and candidate_strength(c) == "strong":
+            continue  # propagation of a confirmed entity
+        if c.pii_type is PiiType.PERSON:
+            words = _name_tokens(c.text)
+            if words and all(w in confirmed for w in words):
+                continue
+            why = "a model or pattern proposed this name, and no label or confirmed person backs it up"
+        else:
+            why = f"a model or pattern proposed this {c.pii_type.value}, and no label backs it up"
+        c.ambiguous = True
+        c.needs_review = True
+        c.review_reason = (f"{c.review_reason}; " if c.review_reason else "") + why + " - not applied unless you confirm it"
+        held += 1
+    return candidates, held

@@ -158,8 +158,9 @@ def test_a_sentence_containing_a_label_word_is_not_a_label():
                      "Mary Jones opened the account in March and called me about the refund."):
         doc, result, dm = analysed(sentence)
         assert [l.text for l in result.labels] == [], sentence
-        assert ("Mary Jones", "PERSON") in [(c.text, c.pii_type.name) for c in result.candidates
-                                            if dm.is_actionable(c)], sentence
+        # Found and typed (strict PII-only: an unlabelled name is held for review,
+        # so "found" is the invariant, not "applied").
+        assert ("Mary Jones", "PERSON") in [(c.text, c.pii_type.name) for c in result.candidates], sentence
 
 
 def test_real_labels_are_still_labels():

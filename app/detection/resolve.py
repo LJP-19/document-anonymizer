@@ -74,6 +74,15 @@ def veto_by_label_geometry(
         hit = False
         if area > 0:
             for label in labels:
+                # Same PAGE first. Rectangles are page coordinates: without this,
+                # a value was deleted because some label sat at the same x/y on a
+                # DIFFERENT page - measured, a first name on a state form was
+                # vetoed by the word "Important" on page 1. On a long return
+                # nearly every spot is a label on some page, so this silently
+                # removed detections document-wide.
+                label_page = getattr(label.line, "page_no", None)
+                if label_page is not None and label_page != candidate.page_no:
+                    continue
                 if _overlap_area(candidate.rect, label.rect) / area >= SPATIAL_LABEL_OVERLAP_THRESHOLD:
                     hit = True
                     break
@@ -163,7 +172,11 @@ def _absorb(winner: Candidate, loser: Candidate) -> None:
     """Keep the losing detector's evidence; flag genuine disagreement."""
     winner.evidence.extend(loser.evidence)
     winner.group_id = winner.group_id or loser.group_id
-    if not _compatible(winner.pii_type, loser.pii_type) and winner.source is not Source.GROUP:
+    # A shape-only match (a rule held for lack of context, e.g. five bare digits
+    # "as a ZIP") is not a second opinion: it does not make a disagreement.
+    shape_only = getattr(loser, "ambiguous", False) and loser.source is Source.REGEX
+    if (not _compatible(winner.pii_type, loser.pii_type) and winner.source is not Source.GROUP
+            and not shape_only):
         winner.needs_review = True
         winner.review_reason = (
             winner.review_reason

@@ -157,7 +157,7 @@ def test_the_session_uses_the_audit_by_default_and_not_when_forced_off(tmp_path,
 # ------------------------------------- findings are applied AND flagged
 
 
-def test_a_typed_model_finding_is_applied_by_default_and_stays_flagged():
+def test_a_typed_model_finding_is_held_for_review_not_applied():
     from app.decisions.manager import DecisionManager, DecisionState
     from app.detection.types import PiiType, Source
 
@@ -165,9 +165,12 @@ def test_a_typed_model_finding_is_applied_by_default_and_stays_flagged():
     typed.needs_review = True  # audit_document always sets this
     manager = DecisionManager()
     manager.register([typed])
-    assert manager.state(typed) is DecisionState.ACCEPTED
-    assert manager.is_actionable(typed), "ACCEPTED means it is redacted in the output"
-    assert typed.needs_review, "...and it must still be flagged for the reviewer"
+    # Strict authorization (0.42.0) reverses the earlier owner decision: a model
+    # finding is a proposal. Listed and flagged, held until a person decides.
+    assert manager.state(typed) is DecisionState.SKIPPED
+    assert not manager.is_actionable(typed)
+    assert manager.origin(typed) == "REVIEW_REQUIRED"
+    assert typed.needs_review
 
 
 def test_what_waited_before_still_waits():

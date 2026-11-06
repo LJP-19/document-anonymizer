@@ -100,7 +100,9 @@ def test_a_bare_surname_of_a_known_person_is_redacted_and_flagged():
     assert not sentence, "a whole sentence was swallowed by widening"
     smiths = [c for c in result.candidates if c.text == "Smith"]
     assert smiths, "the lone surname must be found"
-    assert all(c.needs_review and dm.is_actionable(c) for c in smiths)
+    # Found and flagged - and, strict (0.42.0), HELD: "Smith" may be the person or
+    # "Smith & Wesson". A person decides; nothing is applied on the shape alone.
+    assert all(c.needs_review and not dm.is_actionable(c) for c in smiths)
 
 
 def test_rescan_redacts_a_bare_surname_of_a_known_full_name():
@@ -111,7 +113,8 @@ def test_rescan_redacts_a_bare_surname_of_a_known_full_name():
     assert any(c.text == "Smith" for c in created)
     assert ambiguous == []
     dm = DecisionManager(); dm.register(created)
-    assert all(dm.is_actionable(c) for c in created if c.text == "Smith")
+    # Found by the rescan, flagged, and held (0.42.0): a bare surname is reviewed.
+    assert all(c.needs_review and not dm.is_actionable(c) for c in created if c.text == "Smith")
 
 
 def test_rescan_does_not_touch_an_unrelated_person_with_the_same_surname():

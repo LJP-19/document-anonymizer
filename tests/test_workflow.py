@@ -14,6 +14,12 @@ def _workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text())
 
 
+def _build_jobs() -> dict:
+    """Jobs that install the stack and test or build (0.42.0 added two
+    orchestration jobs, 'version' and 'release', which install nothing)."""
+    return {n: c for n, c in _workflow()["jobs"].items() if n not in ("version", "release")}
+
+
 def test_every_platform_that_ships_a_build_runs_the_tests():
     jobs = _workflow()["jobs"]
     shipping = [
@@ -53,7 +59,7 @@ def test_dependency_installs_retry_and_never_cache():
     wheel that arrived damaged. Without --no-cache-dir pip would keep replaying
     the broken copy from cache on every subsequent run.
     """
-    jobs = _workflow()["jobs"]
+    jobs = _build_jobs()
     for name, config in jobs.items():
         step = next(
             (s for s in config["steps"] if s.get("name") == "Install dependencies"), None
@@ -95,7 +101,7 @@ def test_every_job_installs_the_audit_model():
     the app always needs it bundled regardless of which model gets
     downloaded later.
     """
-    for name, config in _workflow()["jobs"].items():
+    for name, config in _build_jobs().items():
         steps = " ".join(str(s.get("run", "")) for s in config["steps"])
         assert "llama-cpp-python" in steps, f"{name} does not install the runtime"
 
@@ -120,7 +126,7 @@ def test_the_llm_runtime_has_a_multi_version_fallback():
     than only retrying the one version that may itself be the broken
     file, and that step must never silently tolerate failure.
     """
-    for name, config in _workflow()["jobs"].items():
+    for name, config in _build_jobs().items():
         step = next(
             (s for s in config["steps"] if "LLM runtime" in str(s.get("name", ""))), None
         )
@@ -144,7 +150,7 @@ def _superseded_test_shipped_builds_require_the_audit_model():
     Shipping one that quietly lacks the audit model makes it a different product
     from the one that was tested here.
     """
-    for name, config in _workflow()["jobs"].items():
+    for name, config in _build_jobs().items():
         step = next(
             (s for s in config["steps"] if "LLM runtime" in str(s.get("name", ""))), None
         )
@@ -207,7 +213,7 @@ def _superseded_test_models_are_fetched_after_the_runtime_is_installed():
     step, and skipped the Qwen download because llama_cpp was not importable
     yet. Correct guard, wrong order.
     """
-    for name, config in _workflow()["jobs"].items():
+    for name, config in _build_jobs().items():
         names = [str(s.get("name", "")) for s in config["steps"]]
         assert "Fetch the bundled models" in names, f"{name} never fetches the models"
         runtime = next(i for i, n in enumerate(names) if "LLM runtime" in n)
@@ -251,7 +257,7 @@ def _superseded_test_the_audit_model_runs_on_cpu_only():
 
 def _superseded_test_ci_smoke_runs_do_not_invoke_the_model_per_page():
     """It is exercised once, briefly, not across whole documents."""
-    for name, config in _workflow()["jobs"].items():
+    for name, config in _build_jobs().items():
         for step in config["steps"]:
             if "End-to-end CLI run" in str(step.get("name", "")):
                 assert step.get("env", {}).get("DOCANON_LLM") == "0", (
@@ -267,13 +273,13 @@ def _superseded_test_ci_smoke_runs_do_not_invoke_the_model_per_page():
 
 def test_every_job_has_a_timeout():
     """A stalled job must fail in minutes, not consume the six-hour limit."""
-    for name, config in _workflow()["jobs"].items():
+    for name, config in _build_jobs().items():
         assert config.get("timeout-minutes"), f"{name} has no timeout"
 
 
 def test_the_detection_model_is_still_fetched():
     """GLiNER stays. It types values; it does not propose them."""
-    for name, config in _workflow()["jobs"].items():
+    for name, config in _build_jobs().items():
         steps = " ".join(str(s.get("run", "")) for s in config["steps"])
         assert "fetch_models" in steps, f"{name} never fetches GLiNER"
 
@@ -330,7 +336,7 @@ def test_llm_runtime_install_step_specifically_has_the_real_package():
     confirming the actual "Install the LLM runtime" step itself contains
     it, not just that the string appears somewhere in the job.
     """
-    for name, config in _workflow()["jobs"].items():
+    for name, config in _build_jobs().items():
         step = next(
             (s for s in config["steps"] if "LLM runtime" in str(s.get("name", ""))),
             None,
@@ -422,8 +428,11 @@ def test_ci_workflow_actually_executes_the_frozen_binary():
         "expected a --self-test invocation on both the Windows .exe and "
         "the macOS .app, after their respective build steps"
     )
-    assert "DocumentAnonymizer.exe --self-test" in workflow
-    assert "DocumentAnonymizer.app/Contents/MacOS/DocumentAnonymizer --self-test" in workflow
+    # Windows: a --windowed exe is a GUI process PowerShell does not wait for, so
+    # it is started with Start-Process -Wait and its exit code is checked (0.42.0).
+    import re
+    assert re.search(r'DocumentAnonymizer\.exe"\s+-ArgumentList\s+"--self-test"\s+-Wait', workflow)
+    assert re.search(r'DocumentAnonymizer\.app/Contents/MacOS/DocumentAnonymizer"?\s+--self-test', workflow)
 
 
 def test_self_test_writes_result_file_even_when_console_output_is_useless(capsys, monkeypatch):
@@ -745,7 +754,9 @@ def test_every_release_build_ships_the_llm_engine_with_no_bundled_model():
     # contiguous string like the two bash jobs - check both parts appear
     # the right number of times rather than one exact substring.
     assert workflow.count("--extra-index-url") == 3
-    assert workflow.count("https://abetlen.github.io/llama-cpp-python/whl/cpu") == 3
+    # One definition (env LLAMA_INDEX), used by each of the three jobs.
+    assert workflow.count("https://abetlen.github.io/llama-cpp-python/whl/cpu") == 1
+    assert workflow.count("LLAMA_INDEX") == 4
 
     assert "--with-llm" not in workflow, (
         "the flag no longer exists anywhere - no model is bundled at "
@@ -769,7 +780,7 @@ def test_both_platform_builds_check_the_github_release_size_limit():
     app growing) fails loudly and early instead of silently passing every
     other check and only surfacing at the slowest, most expensive step.
     """
-    for name, config in _workflow()["jobs"].items():
+    for name, config in _build_jobs().items():
         if name == "test":
             continue  # the Linux test job produces no release artifact
         step = next(
@@ -778,3 +789,52 @@ def test_both_platform_builds_check_the_github_release_size_limit():
         )
         assert step is not None, f"{name} has no release-size-limit check"
         assert "2147483648" in step["run"], f"{name}'s size check does not use GitHub's real limit"
+
+
+# -- 0.42.0: the automated release pipeline ------------------------------------------
+
+def test_the_release_needs_tests_and_both_platform_builds():
+    """A failed test job, Windows build or macOS build must prevent the release."""
+    release = _workflow()["jobs"]["release"]
+    assert set(release["needs"]) >= {"test", "windows", "macos", "version"}
+    for name in ("windows", "macos"):
+        assert "test" in _workflow()["jobs"][name]["needs"]
+
+
+def test_releases_are_never_triggered_by_ordinary_pushes():
+    on = _workflow()[True] if True in _workflow() else _workflow()["on"]
+    assert "branches" not in (on.get("push") or {}), "an ordinary push must not start a release build"
+    assert (on.get("push") or {}).get("tags") == ["v*"]
+    assert "workflow_dispatch" in on
+
+
+def test_the_tag_must_match_the_application_version():
+    run = " ".join(str(s.get("run", "")) for s in _workflow()["jobs"]["version"]["steps"])
+    assert "app/version.py" in run and "REF_NAME" in run and "exit 1" in run
+
+
+def test_the_windows_job_builds_installs_and_launches_a_real_installer():
+    run = " ".join(str(s.get("run", "")) for s in _workflow()["jobs"]["windows"]["steps"])
+    assert "ISCC.exe" in run and "installer\\\\DocumentAnonymizer.iss" in run.replace("\\", "\\\\")
+    assert "/VERYSILENT" in run and "unins000.exe" in run
+    assert (WORKFLOW.parents[2] / "installer" / "DocumentAnonymizer.iss").exists()
+
+
+def test_the_macos_job_reports_its_signing_status_and_never_fakes_notarization():
+    script = (WORKFLOW.parents[2] / "installer" / "macos" / "sign_and_package.sh").read_text()
+    assert "UNSIGNED" in script and "SIGNED_NOTARIZED" in script
+    assert 'if [ "$STATUS" != "Accepted" ]' in script, "notarization status must be checked"
+    assert "--sign -" not in script, "ad-hoc signing is never a substitute"
+    for secret in ("APPLE_CERTIFICATE_BASE64", "APPLE_CERTIFICATE_PASSWORD", "APPLE_SIGNING_IDENTITY",
+                   "APPLE_ID", "APPLE_APP_SPECIFIC_PASSWORD", "APPLE_TEAM_ID"):
+        assert f"secrets.{secret}" in WORKFLOW.read_text()
+
+
+def test_the_release_job_publishes_checksums_and_a_manifest_with_minimal_permissions():
+    wf = _workflow()
+    assert wf["permissions"] == {"contents": "read"}
+    release = wf["jobs"]["release"]
+    assert release["permissions"] == {"contents": "write"}
+    run = " ".join(str(s.get("run", "")) for s in release["steps"])
+    assert "SHA256SUMS.txt" in run and "build-manifest.json" in run and "source_commit" in run
+    assert "sha256sum -c" in run, "checksums are verified against the uploaded artifacts"

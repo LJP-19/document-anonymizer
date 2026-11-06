@@ -7,8 +7,91 @@ honest state of what is and is not done.
 
 ## Current version
 
-**0.38.0** (bumped once, at the end of this work - not per intermediate edit,
-per instruction).
+**0.41.0** - strict PII-only: only confirmed PII is pseudonymized automatically (below).
+0.40.0 - one synthetic identity per person; 0.39.0 - real-document accuracy audit.
+
+## This pass (0.41.0): false-positive elimination - strict PII-only
+
+Strict scoring (inherited red text from earlier versions excluded and counted separately), same
+three returns, written files:
+
+| Measure | v0.38.2 | 0.39.0 | 0.40.0 | 0.41.0 |
+|---|---:|---:|---:|---:|
+| Precision on genuine content | 0.099 | 0.585 | 0.713 | 0.979 |
+| Recall | 0.650 | 0.887 | 0.889 | 0.844 |
+| Non-PII words wrongly changed | 2873 | 306 | 174 | 9 (all ambiguous, 0 form text) |
+| Inherited words re-pseudonymized (on form elements) | 465 | 358 | 354 | 0 |
+| FP benchmark: wrongly changed / non-PII words | - | - | 12 / 444 | 0 / 444 |
+
+Root causes: re-pseudonymized inherited red text; unconfirmed proposals applied; subjects from
+model guesses; shape-only nine-digit "SSN"; possessive org labels typed PERSON; lone all-caps codes
+as names; same-row values never bound. 41 items are now held for review (recall trade-off).
+Open: 5 applied-but-ambiguous items (two "as of" dates typed DOB, three nine-digit numbers beside a
+name); inherited artifacts left as in the input (original wording not restorable without a template).
+
+
+## This pass (0.40.0): identity-consistent pseudonymization, strict PII-only defaults
+
+Same three diagnostic returns and stack as 0.39.0 (en_core_web_trf; GLiNER weights
+unavailable; Presidio and the LLM off). This time the app's OWN default decisions are
+used - only confirmed PII is applied; untyped, weakly evidenced and ambiguous items are
+held, listed and left readable.
+
+| Measure | v0.38.2 | 0.39.0 | 0.40.0 |
+|---|---:|---:|---:|
+| Real samples, precision / recall / F1 | 0.444 / 0.850 / 0.583 | 0.888 / 0.897 / 0.892 | 0.933 / 0.898 / 0.915 |
+| Real samples, wrongly redacted / missed words | 2873 / 405 | 306 / 277 | 174 / 274 |
+| Synthetic form corpus, precision / recall / F1 | 0.825 / 0.871 / 0.848 | 1.000 / 1.000 / 1.000 | 1.000 / 1.000 / 1.000 |
+
+What changed (durable rules in CLAUDE.md "v0.40.0" sections; tests A-J in
+`tests/test_pseudonymization_identity.py`): name roles learned before generation;
+possessives and honorifics kept around the replacement; given-name/surname aliases
+with context ambiguity (ambiguous components held, never applied); joint filers kept
+as separate people; replacement text red at the value's own baseline/font/size with
+per-glyph removal; filenames keep their structure and replace only confirmed names;
+mapping workbooks in a private per-user folder; no letter scrambling of word tokens.
+Found and fixed during the final QA run: dependents-column role seeding, the "If joint
+return, spouse's first name" label, house-number digit count, name-shaped model
+"streets", and overlapping replacements on a crowded row.
+
+Not done / open: the inputs are outputs of earlier versions (old red pseudonyms,
+overprinted text), so they are not a clean ground truth; one page per return has no
+text (no OCR); GLiNER not exercised here; remaining misses are mostly unlabelled names
+and dates; the frozen-app self-test cannot run in this sandbox (no transformers).
+
+
+## This pass (0.39.0): real-document accuracy audit
+
+Diagnostic input: three 108-page, software-prepared individual returns that earlier
+app versions had already processed (kept out of the repository and out of every
+artifact). Baseline = v0.38.2 at commit d572da3 on the same working copies, same
+stack (en_core_web_trf; GLiNER weights unavailable in the sandbox; Presidio and the
+LLM off - the shipped configuration). Scoring is on the WRITTEN file, word by word.
+
+| Measure | v0.38.2 | 0.39.0 |
+|---|---:|---:|
+| Real samples, precision / recall / F1 | 0.444 / 0.850 / 0.583 | 0.839 / 0.899 / 0.868 |
+| Real samples, false-positive / missed words | 2873 / 405 | 465 / 271 |
+| Synthetic form corpus, precision / recall / F1 | 0.825 / 0.867 / 0.845 | 1.000 / 1.000 / 1.000 |
+| App verifier on real samples | FAIL x3 | independent critical checks pass x3; app verifier still flags fragments |
+
+Root causes fixed (each has a test in `tests/test_form_layout_regressions.py`; the
+durable rules are in CLAUDE.md "v0.39.0 audit"): column-blind value binding;
+cross-page label geometry veto; "LAKESIDE CITY" read as a label; longest-match label
+typing; short surnames excluded from identity tracking; name control on scanlines;
+name-shaped form text (now recognised by typeset style); IRS mailing addresses;
+bare states; placeholders; numberless model "streets"; honorifics; phones without a
+separator; DOBs on caption-less pages; redaction boxes erasing the neighbouring line
+(and an amount); pseudonyms reusing another value's words; verifier false alarm on
+ordinary words; Presidio's runtime network call and its non-personal dates.
+
+Not done / open: GLiNER was not exercised (weights unreachable here) - CI exercises
+it; a person's first name or surname appearing ALONE on a page where nothing detected
+it still survives in a few places (the app verifier reports these); 6 of 12 scored
+dates of birth on the real samples are still missed; the real samples are outputs of
+earlier versions, so they contain old red pseudonyms and are not a clean ground truth;
+three documents of one form family are not proof of general accuracy.
+
 
 ## Passes 0.37.19 - 0.37.30 (catch-up entry; full reasoning for each is in CLAUDE.md)
 

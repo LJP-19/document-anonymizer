@@ -212,11 +212,17 @@ def identify_subjects(
     for candidate in candidates:
         if candidate.pii_type not in PROPAGATED_TYPES:
             continue
+        if getattr(candidate, "ambiguous", False) and not candidate.group_id:
+            # Held for review is not confirmed: a guess must never become a
+            # subject and spread to every page as an applied replacement.
+            continue
         value = candidate.normalized
-        if len(value) < MIN_PROPAGATION_LENGTH:
+        group = by_group.get(candidate.group_id) if candidate.group_id else None
+        if len(value) < MIN_PROPAGATION_LENGTH and not _short_name_ok(candidate, group):
+            continue
+        if not _subject_shape_ok(candidate, group):
             continue
 
-        group = by_group.get(candidate.group_id) if candidate.group_id else None
         # A label naming the value's OWN TYPE at all - groups.py already
         # recognised it as a PERSON/SSN/etc. field - is a stronger, more
         # general signal than matching a hand-curated word list. Depending
@@ -229,7 +235,11 @@ def identify_subjects(
             and not group.label.non_pii
         )
         primary = typed_field or bool(group and PRIMARY_LABEL.search(group.label.text))
-        strong = candidate.confidence >= 0.85
+        # Strict PII-only (0.41.0): only a LABEL or a deterministic identifier
+        # rule makes a subject. A confident model guess used to qualify too, and a
+        # wrong one ("Hunter", a fund name) then spread to every page as a
+        # confirmed entity.
+        strong = candidate.confidence >= 0.85 and candidate.source is Source.REGEX
 
         if not (primary or strong):
             continue
@@ -250,12 +260,219 @@ def identify_subjects(
     for entity in list(known.values()):
         if entity.pii_type is not PiiType.PERSON:
             continue
-        tokens = [t for t in NAME_SUFFIX.sub("", entity.value).split() if len(t) >= 3]
+        tokens = [t for t in NAME_SUFFIX.sub("", entity.value).split() if len(t.strip(".")) >= 2]
         if len(tokens) >= 2:
             entity.aliases.add(tokens[-1])
             entity.aliases.add(" ".join(tokens))
+            # The given name alone identifies the person too ("Ann" for "Ann
+            # Tash"), once the full name is established. Surname-first values
+            # ("Tash, Ann") put it last. Each occurrence is still validated in
+            # propagate() and an uncertain one is only reported.
+            surname_first = "," in entity.value
+            given = tokens[1] if surname_first else tokens[0]
+            if given.strip(".,").isalpha() and len(given.strip(".,")) >= 2:
+                entity.aliases.add(given.strip(".,"))
         entity.aliases.update(spelling_variants(entity.value))
     return list(known.values())
+
+
+# --------------------------------------------------------------------------- #
+# short names (2-3 letters)
+# --------------------------------------------------------------------------- #
+
+#: A 2-3 letter value is only a name when the document says so. MIN_PROPAGATION_LENGTH
+#: kept "Smith"-shaped names safe from noise, but silently excluded every short
+#: surname - Li, Wu, Ng, Lim, Kim, Ho - from identity tracking altogether.
+#: Measured on real returns: a 3-letter surname, label-confirmed on page 1, stayed
+#: readable on dozens of later schedules. These are the guards that replace the
+#: blanket length cut-off for PERSON tokens.
+_STATE_CODES = {
+    "al", "ak", "az", "ar", "ca", "co", "ct", "de", "fl", "ga", "hi", "id", "il", "in", "ia", "ks",
+    "ky", "la", "me", "md", "ma", "mi", "mn", "ms", "mo", "mt", "ne", "nv", "nh", "nj", "nm", "ny",
+    "nc", "nd", "oh", "ok", "or", "pa", "ri", "sc", "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv",
+    "wi", "wy", "dc", "pr", "us", "usa",
+}
+
+
+def _subject_shape_ok(candidate: Candidate, group) -> bool:
+    """A value is trusted document-wide only if it LOOKS like what it is typed.
+
+    Propagation multiplies a mistake by every page: a sentence or a label
+    fragment bound under a name label ("relationship", "to you", "award from
+    the IRS for information you provided ...") became a known "person" and was
+    redacted wherever its words recurred. A PERSON subject must be name-shaped
+    (or a label-confirmed short name); nothing made only of form words is a
+    subject; a digit-defined type must have digits.
+    """
+    from .groups import _DIGIT_TYPES, is_placeholder_value
+    from .heuristics import FORM_VOCABULARY, looks_like_a_lone_surname, looks_like_person
+
+    value = candidate.normalized
+    words = [w.strip(".,;:()'\u2019").lower() for w in value.split()]
+    if not words or is_placeholder_value(value):
+        return False
+    if all(w in FORM_VOCABULARY or w in _SHORT_ENGLISH for w in words if w):
+        return False
+    if candidate.pii_type.value in _DIGIT_TYPES and not any(ch.isdigit() for ch in value):
+        return False
+    if candidate.pii_type is PiiType.PERSON:
+        if len(value) < MIN_PROPAGATION_LENGTH:
+            return _short_name_ok(candidate, group)
+        tokens = [t for t in value.split() if t not in ("&", "+", "and", "AND", "And", ",")]
+        return looks_like_person(value)[0] or (bool(tokens) and all(
+            _short_token_shape_ok(t) or looks_like_person(t)[0] or looks_like_a_lone_surname(t)
+            or (len(t.strip(".")) == 1 and t[:1].isalpha())          # middle initial
+            for t in tokens
+        ))
+    return True
+
+
+def _short_token_shape_ok(token: str) -> bool:
+    from .heuristics import FORM_VOCABULARY
+
+    bare = token.strip(".,;:")
+    return (
+        2 <= len(bare) <= 3
+        and bare.isalpha()
+        and bare.lower() not in _STATE_CODES
+        and bare.lower() not in FORM_VOCABULARY
+        and bare.lower() not in _SHORT_ENGLISH
+    )
+
+
+#: Two- and three-letter English words that are also capitalised on forms
+#: ("You", "Not", "Who", "Tax"). A short name must never be one of these:
+#: measured, a checkbox caption "You" bound as a value became a known "person"
+#: and was propagated onto every sentence-initial "You" in a return.
+_SHORT_ENGLISH = {
+    "you", "your", "yes", "not", "who", "how", "why", "all", "any", "are", "was", "has", "had",
+    "her", "him", "his", "its", "our", "out", "own", "per", "the", "and", "but", "for", "nor",
+    "yet", "too", "use", "see", "may", "can", "did", "get", "got", "let", "new", "old", "one",
+    "two", "six", "ten", "tax", "net", "sum", "add", "box", "end", "day", "due", "pay", "fee",
+    "job", "age", "law", "row", "set", "top", "way", "act", "aid", "air", "art", "car", "cut",
+    "him", "it", "is", "in", "on", "of", "or", "to", "by", "an", "as", "at", "be", "do", "go",
+    "he", "if", "me", "my", "no", "so", "up", "us", "we", "am", "id", "mo", "yr", "pt", "ln",
+    "jr", "sr", "ii", "iv", "md", "dds", "cpa", "esq", "phd", "inc", "llc", "ltd", "co", "corp",
+}
+
+
+def _short_name_ok(candidate: Candidate, group) -> bool:
+    """A short PERSON value is a subject only when its own field label says so."""
+    if candidate.pii_type is not PiiType.PERSON or group is None:
+        return False
+    if group.label.non_pii or PiiType.PERSON not in group.expected_types:
+        return False
+    tokens = candidate.normalized.split()
+    return bool(tokens) and all(_short_token_shape_ok(t) or len(t) >= MIN_PROPAGATION_LENGTH for t in tokens)
+
+
+def _short_form_ok(entity: "KnownEntity", form: str) -> bool:
+    return entity.pii_type is PiiType.PERSON and " " not in form.strip() and _short_token_shape_ok(form)
+
+
+def _short_match_ok(text: str) -> bool:
+    """The occurrence itself must be written as a name: Capitalised or ALL CAPS.
+    "li" inside a sentence, or a lowercase word, is not the person."""
+    return text[:1].isupper() and (text.isupper() or text[1:].islower())
+
+
+#: A machine-read scanline: tokens are mostly digits ("CA LIM  30 0 202212 430").
+def _code_line(text: str) -> bool:
+    tokens = text.split()
+    if len(tokens) < 4:
+        return False
+    numeric = sum(1 for t in tokens if t.isdigit())
+    return numeric / len(tokens) >= 0.5
+
+
+def name_control_hits(doc: Document, entities: Iterable["KnownEntity"], covered: dict) -> list[Candidate]:
+    """The IRS "name control" - the first four letters of a filer's surname -
+    printed on payment-voucher scanlines. It is a fragment of the surname, so
+    it is the person; but it is not the surname, so propagation never matched it.
+    Only looked for on code-like lines (mostly numeric tokens), where a 2-4
+    letter uppercase token has no other plausible reading."""
+    controls: dict[str, KnownEntity] = {}
+    for entity in entities:
+        if entity.pii_type is not PiiType.PERSON:
+            continue
+        tokens = [t for t in NAME_SUFFIX.sub("", entity.value).split() if t.strip(".").isalpha() or "-" in t]
+        if len(tokens) < 2:
+            continue
+        letters = "".join(ch for ch in tokens[-1] if ch.isalpha()).upper()
+        if len(letters) >= 2:
+            controls.setdefault(letters[:4], entity)
+    if not controls:
+        return []
+    found: list[Candidate] = []
+    for page in doc.pages:
+        for line in page.lines:
+            if not _code_line(line.text):
+                continue
+            existing = covered.get(line.key(), [])
+            for match in re.finditer(r"(?<![A-Z0-9])[A-Z]{2,4}(?![A-Z0-9])", line.text):
+                entity = controls.get(match.group())
+                if entity is None or any(match.start() < e and s < match.end() for s, e in existing):
+                    continue
+                rect = line.rect_for(match.start(), match.end())
+                if rect is None:
+                    continue
+                found.append(Candidate(
+                    pii_type=PiiType.PERSON, text=match.group(), page_no=page.number, rect=rect,
+                    line=line, start=match.start(), end=match.end(), confidence=0.75,
+                    source=Source.COVERAGE,
+                    evidence=[Evidence(Source.COVERAGE, "name control (first letters of a known surname) on a scanline", 0.75)],
+                    needs_review=True,
+                    review_reason="the first letters of a known surname, printed on a machine-read line",
+                ))
+    return found
+
+
+def _after_known_components(text: str, end: int, components: set) -> str:
+    """The text after a name match, skipping the person's OTHER name words.
+
+    "Marcus" in "Marcus Feldman Manufacturing Inc." is followed by the known
+    surname and then the business suffix: the occurrence belongs to the
+    business name exactly as the full name does, and the given-name alias must
+    not take it over once the full name was (correctly) refused there.
+    """
+    from .textnorm import fold
+
+    rest = text[end:]
+    while True:
+        m = re.match(r"\s+([^\W\d_][\w'\u2019\-]*)", rest)
+        if not m or fold(m.group(1)) not in components:
+            return rest
+        rest = rest[m.end():]
+
+
+_TITLES = {"mr", "mrs", "ms", "miss", "mx", "dr", "prof", "rev", "hon", "sir", "madam"}
+_JOINERS = {"and", "&", "or", "y", "et"}
+
+
+def _component_context_is_ambiguous(text: str, start: int, end: int, components: set) -> bool:
+    """Is a lone name component in a context that may mean someone or something else?
+
+    "Tash agreed" / "Mr. Tash" / "Tash's account" / "Tash and Tash" are the person.
+    "Corin River Trail", "TASH FAMILY TRUST", "Smith Barney" are not safely the
+    person: the FOLLOWING capitalised word makes it part of another name. A word written in lower case on a mixed-case line ("a tash of")
+    is an ordinary word. Only the immediately adjacent word, separated by ONE
+    space, counts - a wider gap is a table column, not part of the name.
+    """
+    from .textnorm import fold
+
+    matched = text[start:end]
+    if matched.islower() and any(ch.isupper() for ch in text):
+        return True
+    after = re.match(r" ([^\W\d_][\w'\u2019\-]*)", text[end:])
+    if after:
+        word = after.group(1)
+        bare = re.sub(r"['\u2019]s$", "", word)
+        if word[:1].isupper() and fold(bare) not in components and fold(bare) not in _JOINERS:
+            return True
+    # The word BEFORE is not used: sentences start with capitals ("Call John
+    # tomorrow"), and a real other person's full name ("Bob Tash") is already a
+    # model/rule candidate covering this spot, which keeps propagation off it.
+    return False
 
 
 def spelling_variants(name: str) -> set[str]:
@@ -319,10 +536,17 @@ def propagate(
     for candidate in candidates:
         covered.setdefault(candidate.line.key(), []).append((candidate.start, candidate.end))
 
+    from .textnorm import fold
+
+    components = {
+        fold(t.strip(".,"))
+        for e in entities if e.pii_type is PiiType.PERSON
+        for form in e.all_forms for t in form.replace(",", " ").split()
+    }
     patterns: list[tuple[KnownEntity, str, re.Pattern]] = []
     for entity in entities:
         for form in entity.all_forms:
-            if len(form) < MIN_PROPAGATION_LENGTH:
+            if len(form) < MIN_PROPAGATION_LENGTH and not _short_form_ok(entity, form):
                 continue
             patterns.append(
                 (
@@ -346,7 +570,7 @@ def propagate(
                     if any(match.start() < e and s < match.end() for s, e in existing):
                         continue
                     if entity.pii_type is PiiType.PERSON and ORG_SUFFIX_AFTER.match(
-                        line.text[match.end():match.end() + 20]
+                        _after_known_components(line.text, match.end(), components)[:20]
                     ):
                         # "LJP Manufacturing Inc." - do not transform the
                         # known person's name into the start of a different
@@ -355,17 +579,22 @@ def propagate(
                         # treating this token as the same person would be
                         # wrong regardless of confidence.
                         continue
+                    if len(form) < MIN_PROPAGATION_LENGTH and not _short_match_ok(match.group()):
+                        continue
                     rect = line.rect_for(match.start(), match.end())
                     if rect is None:
                         continue
-                    is_alias = form != entity.value
+                    is_alias = form != entity.value or len(form) < MIN_PROPAGATION_LENGTH
                     # A bare surname or first name of a known person is redacted too, and
                     # maps through the same per-name pseudonym ("John Smith" -> "Tony Stark",
                     # "Smith" -> "Stark"). Owner's rule: once the full name is known, every
                     # occurrence of its parts goes. The org-suffix guard above ("Smith Inc.")
                     # and the protected-text gate still apply; it is flagged so a reviewer
                     # can keep the odd one ("Smith & Wesson").
-                    ambiguous = False
+                    ambiguous = bool(
+                        entity.pii_type is PiiType.PERSON and " " not in form.strip()
+                        and _component_context_is_ambiguous(line.text, match.start(), match.end(), components)
+                    )
                     found.append(
                         Candidate(
                             pii_type=entity.pii_type,
@@ -393,7 +622,9 @@ def propagate(
                                 "accept it only if it is the same person" if ambiguous
                                 else "matched on part of a known name"
                             ),
+                            ambiguous=ambiguous,
                         )
                     )
                     existing.append((match.start(), match.end()))
+    found.extend(name_control_hits(doc, entities, covered))
     return found

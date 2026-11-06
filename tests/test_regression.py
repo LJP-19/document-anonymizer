@@ -114,12 +114,16 @@ def test_unclassified_value_line_is_surfaced_but_not_replaced(pdfs):
     assert all(s.decisions.state(c) is DecisionState.SKIPPED for c in unclassified)
 
 
-def test_low_confidence_detections_are_redacted_by_default(pdfs):
-    """The 987-65-4321 case: flagged, but still removed unless kept explicitly."""
+def test_low_confidence_detections_are_held_for_review(pdfs):
+    """The 987-65-4321 case: flagged and low-confidence. Fail CLOSED (0.42.0): it is
+    listed for review and left readable until a person decides - the old default
+    ('removed unless kept explicitly') was the fail-open bug."""
     s = analysed(pdfs["table"])
     weak = next(c for c in s.candidates if c.normalized == "987-65-4321")
     assert weak.needs_review and weak.confidence < 0.9
-    assert s.decisions.state(weak) is DecisionState.ACCEPTED
+    assert not s.decisions.is_actionable(weak)
+    assert s.decisions.origin(weak) == "REVIEW_REQUIRED"
+    assert weak.id not in {t.candidate_id for t in s.plan().targets}
 
 
 # --- label protection (sections 13, 85) ------------------------------------
@@ -268,10 +272,12 @@ def test_skip_preserves_the_value(pdfs, tmp_path):
 def test_apply_to_all_and_undo(pdfs):
     s = analysed(pdfs["paragraph"])
     target = next(c for c in s.candidates if c.pii_type is PiiType.PERSON)
+    s.decisions.set_state([target], DecisionState.ACCEPTED)
+    before = s.decisions.state(target)
     changed = s.decisions.apply_to_all(s.candidates, target, DecisionState.SKIPPED)
     assert changed and all(s.decisions.state(c) is DecisionState.SKIPPED for c in changed)
     assert s.decisions.undo()
-    assert s.decisions.state(target) is not DecisionState.SKIPPED
+    assert s.decisions.state(target) is before
 
 
 def test_edit_replacement_is_used(pdfs, tmp_path):
@@ -1015,17 +1021,17 @@ def test_review_model_suggestions_are_not_applied_unasked():
         )
 
     from_rule, from_audit = make(Source.REGEX), make(Source.AUDIT)
+    from_rule.label_confirmed = True  # a rule match bound to its own field label
     from_audit.line = Line(page_no=0, block_no=0, line_no=1, spans=[span], text="X",
                            offsets=[char], bbox=(0, 0, 5, 10))
 
     manager = DecisionManager()
     manager.register([from_rule, from_audit])
     assert manager.state(from_rule) is DecisionState.ACCEPTED
-    # Reversed on the owner's instruction: a TYPED finding from the review
-    # model is redacted by default (and stays flagged for review) instead of
-    # waiting for a decision. What still waits - untyped values, and values
-    # with too little evidence - is covered in tests/test_audit_default.py.
-    assert manager.state(from_audit) is DecisionState.ACCEPTED
+    # Strict authorization (0.42.0): a review-model finding is a proposal and
+    # waits for a person; it is never applied unasked.
+    assert manager.state(from_audit) is DecisionState.SKIPPED
+    assert not manager.is_actionable(from_audit)
 
 
 # --- pseudonym quality -----------------------------------------------------
@@ -2012,14 +2018,18 @@ def test_a_name_token_in_the_filename_matches_the_document_pseudonym(tmp_path):
     assert "Lance" not in name
 
 
-def test_a_name_only_in_the_filename_still_gets_a_stable_pseudonym(tmp_path):
-    """Spec: filename PII need not also occur inside the PDF body."""
+def test_a_name_only_in_the_filename_is_reported_not_guessed(tmp_path):
+    """Owner's rule (0.40.0) supersedes the earlier filename-only guessing:
+    replace CONFIRMED identities only and keep descriptive words. Guessing by
+    name shape also rewrote words such as "Latest" and "Filed". A filename word
+    that may be a name but never occurs as one in the document is listed for
+    review instead of being silently kept or blindly replaced."""
     path = _lines_pdf(tmp_path / "Backup_Torres_Files.pdf",
                        ["1  Wages ...... $412,890"])
     s = analysed(path)
     name = s.safe_output_name()
-    assert "Torres" not in name
-    assert "Backup" in name and "Files" in name  # non-PII parts preserved
+    assert name == "Backup_Torres_Files.pdf"          # structure and words kept
+    assert "Torres" in s.filename_review                # ...and the risk is reported
 
 
 def test_ordinary_filename_words_are_never_mistaken_for_names(tmp_path):

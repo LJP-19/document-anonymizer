@@ -261,6 +261,9 @@ def main() -> int:
     args = parser.parse_args()
 
     verify_model_is_bundled()
+    # The icon is generated, not committed: without this step the .ico/.icns did
+    # not exist on the CI runners and the shipped app had no icon.
+    subprocess.run([sys.executable, str(ROOT / "buildtools" / "make_icon.py")], check=True, cwd=ROOT)
     dist = build()
 
     # Prove the produced bundle is self-contained before anything ships.

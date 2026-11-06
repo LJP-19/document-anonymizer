@@ -1,30 +1,81 @@
 name: Build and release
 
-# Builds run on native GitHub-hosted runners because the .exe and .dmg cannot be
-# produced from a Linux development machine (spec section 57).
+# The ONLY official way installers are made (RELEASE_GUIDE.md). Native GitHub-hosted
+# runners build the Windows installer and the macOS DMG from the SAME commit; no
+# local machine, PowerShell session or PUBLISH.bat run is involved.
 #
-# Push to the branch  -> builds, uploads artifacts.
-# Push a v* tag       -> builds, uploads artifacts, publishes a GitHub Release.
+#   Push a tag vX.Y.Z           -> test, build both, publish GitHub Release vX.Y.Z
+#   Run workflow (dispatch)     -> test, build both, upload artifacts; optionally
+#                                  create a DRAFT or PUBLISHED release
+#
+# Ordinary pushes do not build: a 1-2 hour build is started deliberately.
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Create a GitHub Release from this run?"
+        type: choice
+        options: ["none", "draft", "publish"]
+        default: "none"
+      expected_version:
+        description: "Optional: fail unless app/version.py says exactly this (e.g. 0.42.0)"
+        type: string
+        default: ""
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: build-release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   PYTHON_VERSION: "3.12"
-  # Pinned model wheel. Installed from a URL, never downloaded by the app itself.
+  # Pinned model wheel. Installed from a URL at build time, bundled, never
+  # downloaded by the app at runtime.
   SPACY_MODEL_WHEEL: "https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.7.3/en_core_web_trf-3.7.3-py3-none-any.whl"
+  LLAMA_INDEX: "https://abetlen.github.io/llama-cpp-python/whl/cpu"
 
 jobs:
-  test:
-    timeout-minutes: 45
-    name: Tests (Linux)
+  # ---------------------------------------------------------------------------
+  version:
+    name: Version check
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      commit: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read and validate the version
+        id: v
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          EXPECTED: ${{ inputs.expected_version }}
+        run: |
+          version=$(python3 -c 'import re;print(re.search(r"__version__\s*=\s*\"([^\"]+)\"", open("app/version.py").read()).group(1))')
+          echo "app/version.py: $version"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::app/version.py version '$version' is not X.Y.Z"; exit 1
+          fi
+          if [ "$REF_TYPE" = "tag" ] && [ "$REF_NAME" != "v$version" ]; then
+            echo "::error::tag $REF_NAME does not match app/version.py ($version). Retag as v$version or fix the version."; exit 1
+          fi
+          if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$version" ]; then
+            echo "::error::expected version $EXPECTED but app/version.py says $version"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  test:
+    name: Tests (Linux)
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -46,49 +97,39 @@ jobs:
           install -r requirements-dev.txt
           install "${SPACY_MODEL_WHEEL}"
       - name: Install the LLM runtime
-        # A corrupt wheel on this CPU index has killed builds before (see
-        # CLAUDE.md) - the open-ended >=0.3.16 constraint always resolves
-        # to the newest release, and when THAT specific file is corrupted
-        # at the source, retrying the same version just re-downloads the
-        # same broken bytes. Confirmed directly: a real macOS build hit
-        # `zlib.error: invalid block type` on 0.3.36 three times in a row,
-        # with `pip cache purge` reporting 0 files removed each time - the
-        # corruption is server-side, not a local cache artifact a purge
-        # could fix. Falls back through specific, previously-proven-good
-        # versions (0.3.35, then 0.3.16) rather than only retrying the
-        # one version that may itself be the broken file.
+        # A corrupt wheel on this CPU index killed builds before (CLAUDE.md):
+        # fall back through specific, previously-good versions.
         run: |
-          install_llm_runtime() {
-            for spec in "llama-cpp-python>=0.3.16" "llama-cpp-python==0.3.35" "llama-cpp-python==0.3.16"; do
-              for attempt in 1 2 3; do
-                pip install --no-cache-dir --retries 5 --timeout 60 "$spec" \
-                  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu && return 0
-                echo "::warning::pip attempt $attempt failed for: $spec"
-                pip cache purge || true
-                sleep $((attempt * 10))
-              done
-              echo "::warning::all attempts for $spec failed; trying the next version"
+          for spec in "llama-cpp-python>=0.3.16" "llama-cpp-python==0.3.35" "llama-cpp-python==0.3.16"; do
+            for attempt in 1 2 3; do
+              pip install --no-cache-dir --retries 5 --timeout 60 "$spec" --extra-index-url "$LLAMA_INDEX" && exit 0
+              echo "::warning::pip attempt $attempt failed for: $spec"; pip cache purge || true; sleep $((attempt * 10))
             done
-            return 1
-          }
-          install_llm_runtime
+          done
+          exit 1
       - name: Fetch the bundled models
-        # After the runtime install, never before: the weights and the runtime
-        # are both required and neither should depend on the other's ordering.
         run: python buildtools/fetch_models.py
       - name: Install Qt runtime libraries
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0
-      - name: Run the full suite
-        # GUI tests are back in the gate: the teardown crash was a test leaving
-        # a worker running, not a Qt defect. 10 consecutive clean runs.
+      - name: Run the full suite (release gate)
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest tests -q
+      - name: False-positive benchmark (release gate - must be zero)
+        env:
+          DOCANON_LLM: "0"
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m benchmark.run_fp_benchmark --out build/fp --json build/fp/result.json
+          python - <<'PY'
+          import json, sys
+          r = json.load(open("build/fp/result.json"))["_total"]
+          print("false positives:", r["fp"], "of", r["fp"] + r["tn"], "non-PII words")
+          sys.exit(1 if r["fp"] else 0)
+          PY
       - name: End-to-end CLI run on synthetic fixtures
-        # The audit model is exercised by its own short step below. Running it
-        # over every page here takes tens of minutes on a CPU-only runner.
         env:
           DOCANON_LLM: "0"
         run: |
@@ -96,11 +137,14 @@ jobs:
           python -m app.cli process build/fixtures/form.pdf --accept-all -o build/form.anon.pdf
           python -m app.cli process build/fixtures/stacked.pdf --accept-all -o build/stacked.anon.pdf
 
+  # ---------------------------------------------------------------------------
   windows:
-    timeout-minutes: 60
-    name: Windows .exe
-    needs: test
+    name: Windows installer (x64)
+    needs: [version, test]
     runs-on: windows-latest
+    timeout-minutes: 150
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -125,133 +169,92 @@ jobs:
           Install-Retry @("pyinstaller==6.11.1")
           Install-Retry @("${env:SPACY_MODEL_WHEEL}")
       - name: Install the LLM runtime
-        # A corrupt wheel on this CPU index has killed builds before (see
-        # CLAUDE.md) - the open-ended >=0.3.16 constraint always resolves
-        # to the newest release, and when THAT specific file is corrupted
-        # at the source, retrying the same version just re-downloads the
-        # same broken bytes. Confirmed directly: a real macOS build hit
-        # `zlib.error: invalid block type` on 0.3.36 three times in a row,
-        # with `pip cache purge` reporting 0 files removed each time - the
-        # corruption is server-side, not a local cache artifact a purge
-        # could fix. Falls back through specific, previously-proven-good
-        # versions (0.3.35, then 0.3.16) rather than only retrying the
-        # one version that may itself be the broken file.
         run: |
-          function Install-Retry {
-            param([string[]]$PipArgs)
+          $ok = $false
+          foreach ($spec in @("llama-cpp-python>=0.3.16", "llama-cpp-python==0.3.35", "llama-cpp-python==0.3.16")) {
             for ($attempt = 1; $attempt -le 3; $attempt++) {
-              pip install --no-cache-dir --retries 5 --timeout 60 @PipArgs
-              if ($LASTEXITCODE -eq 0) { return }
-              Write-Warning "pip attempt $attempt failed: $PipArgs"
-              pip cache purge
-              Start-Sleep -Seconds ($attempt * 10)
+              pip install --no-cache-dir --retries 5 --timeout 60 $spec --extra-index-url $env:LLAMA_INDEX
+              if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+              Write-Warning "pip attempt $attempt failed: $spec"; pip cache purge; Start-Sleep -Seconds ($attempt * 10)
             }
-            throw "pip failed after 3 attempts: $PipArgs"
+            if ($ok) { break }
           }
-          $indexUrl = "https://abetlen.github.io/llama-cpp-python/whl/cpu"
-          $versionSpecs = @(
-            "llama-cpp-python>=0.3.16",
-            "llama-cpp-python==0.3.35",
-            "llama-cpp-python==0.3.16"
-          )
-          $installed = $false
-          foreach ($spec in $versionSpecs) {
-            try {
-              Install-Retry @($spec, "--extra-index-url", $indexUrl)
-              $installed = $true
-              break
-            } catch {
-              Write-Warning "all attempts for $spec failed; trying the next version"
-            }
-          }
-          if (-not $installed) {
-            throw "llama-cpp-python: all version fallbacks failed"
-          }
+          if (-not $ok) { throw "llama-cpp-python: all version fallbacks failed" }
       - name: Fetch the bundled models
-        # After the runtime install, never before: the weights and the runtime
-        # are both required and neither should depend on the other's ordering.
         run: python buildtools/fetch_models.py
       - name: Confirm the model is installed before packaging
         run: python -c "import spacy; spacy.require_cpu(); spacy.load('en_core_web_trf'); print('model OK, CPU')"
       - name: Run the regression suite on this runner
-        # The Linux job gates the build, but PyMuPDF text extraction, font
-        # metrics and path handling differ per platform - and this is the exact
-        # machine that produces the installer.
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest tests -q
-      - name: End-to-end CLI run on this runner
-        env:
-          DOCANON_LLM: "0"
-        run: |
-          python -m tests.fixtures build/fixtures
-          python -m app.cli process build/fixtures/form.pdf --accept-all -o build/form.anon.pdf
-          python -m app.cli process build/fixtures/stacked.pdf --accept-all -o build/stacked.anon.pdf
-      - name: Build
+      - name: Build the application bundle
         run: python buildtools/build.py
-      - name: Verify the bundle is actually complete
-        # Fast, file-presence-only checks - catches an obviously missing
-        # package (like the transformers/models/__init__.py gap that
-        # shipped once already) before paying for a full model-load in the
-        # self-test step below. This script existed but was never actually
-        # wired into CI - it would have caught that regression days
-        # earlier than the self-test did.
+      - name: Verify the bundle is complete
         run: python buildtools/verify_bundle.py
-      - name: Self-test the FROZEN executable itself
-        # The step above only proves the CI runner's own, unfrozen Python can
-        # import everything - it cannot catch a PyInstaller-freezing-specific
-        # bundling bug (e.g. two packages vendoring conflicting copies of an
-        # overlapping shared library, merged into one flat directory only
-        # when frozen). This is the first point in the whole workflow that
-        # actually executes the shipped artifact.
-        run: .\dist\DocumentAnonymizer\DocumentAnonymizer.exe --self-test
-      - name: Read version
-        id: v
-        shell: bash
-        run: echo "version=$(python -c 'import app.version;print(app.version.__version__)')" >> $GITHUB_OUTPUT
-      - name: Name the artifact
+      - name: Self-test the frozen executable
+        # A --windowed exe is a GUI-subsystem process: PowerShell does not wait for
+        # it when called directly. Start-Process -Wait is what makes the exit code real.
+        run: |
+          $p = Start-Process -FilePath ".\dist\DocumentAnonymizer\DocumentAnonymizer.exe" -ArgumentList "--self-test" -Wait -PassThru
+          Get-Content "$env:USERPROFILE\.document-anonymizer\self-test-result.txt" -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "frozen self-test failed with exit code $($p.ExitCode)" }
+      - name: Install Inno Setup if the runner lacks it
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { throw "Inno Setup is not available" }
+      - name: Build the installer
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" "/DSourceDir=$PWD\dist\DocumentAnonymizer" "/DOutputDir=$PWD\out" installer\DocumentAnonymizer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          Get-ChildItem out
+      - name: Install silently, launch the INSTALLED app, uninstall
+        run: |
+          $setup = "out\DocumentAnonymizer-Setup-v$env:VERSION-Windows-x64.exe"
+          if (-not (Test-Path $setup)) { throw "installer not found: $setup" }
+          $dir = "C:\DA-install-test"
+          $p = Start-Process -FilePath $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$dir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "silent install failed: $($p.ExitCode)" }
+          if (-not (Test-Path "$dir\DocumentAnonymizer.exe")) { throw "installed exe missing" }
+          Remove-Item "$env:USERPROFILE\.document-anonymizer\self-test-result.txt" -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath "$dir\DocumentAnonymizer.exe" -ArgumentList "--self-test" -Wait -PassThru
+          Get-Content "$env:USERPROFILE\.document-anonymizer\self-test-result.txt" -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "installed app self-test failed: $($p.ExitCode)" }
+          $p = Start-Process -FilePath "$dir\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "silent uninstall failed: $($p.ExitCode)" }
+      - name: Size check (GitHub release size limit) and checksum
         shell: bash
         run: |
-          mkdir -p out
-          cp -r dist/DocumentAnonymizer "out/DocumentAnonymizer-Windows-v${{ steps.v.outputs.version }}"
-          cd out && 7z a "DocumentAnonymizer-Windows-v${{ steps.v.outputs.version }}.zip" "DocumentAnonymizer-Windows-v${{ steps.v.outputs.version }}"
-      - name: Verify the artifact fits GitHub's release size limit
-        # Real, reported failure: a real build succeeded completely, then
-        # the LAST step of the entire workflow - publishing the release -
-        # failed with "size must be less than 2147483648", wasting the
-        # full build after everything else had already passed. GitHub
-        # Releases rejects any single asset over 2 GB (2147483648 bytes =
-        # exactly 2^31) - a hard platform ceiling, not configurable.
-        # Checked here, right after the real artifact exists and before
-        # either upload step, so this fails loudly and immediately instead
-        # of silently passing every other check and only surfacing at the
-        # very last, slowest step.
-        shell: bash
-        run: |
-          file=$(ls out/*.zip)
-          size=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file")
-          limit=2147483648
-          echo "artifact: $file ($size bytes, limit $limit)"
-          if [ "$size" -ge "$limit" ]; then
-            echo "::error::$file is $size bytes - GitHub Releases rejects anything >= $limit bytes. The build is complete and correct; it is too large to publish as a release asset. See CLAUDE.md's entry on the 2GB release limit."
-            exit 1
-          fi
+          f="out/DocumentAnonymizer-Setup-v${VERSION}-Windows-x64.exe"
+          size=$(stat -c%s "$f")
+          echo "installer: $f ($size bytes)"
+          if [ "$size" -ge 2147483648 ]; then echo "::error::over GitHub's 2 GB release-asset limit"; exit 1; fi
+          (cd out && sha256sum "$(basename "$f")" > "$(basename "$f").sha256")
+          cat out/*.sha256
       - uses: actions/upload-artifact@v4
         with:
-          name: DocumentAnonymizer-Windows-v${{ steps.v.outputs.version }}
-          path: out/*.zip
+          name: windows-installer
+          path: |
+            out/*.exe
+            out/*.sha256
           if-no-files-found: error
-      - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/v')
-        with:
-          files: out/*.zip
-          generate_release_notes: true
+          retention-days: 30
 
+  # ---------------------------------------------------------------------------
   macos:
-    timeout-minutes: 60
-    name: macOS .dmg
-    needs: test
+    name: macOS DMG (Apple Silicon arm64)
+    needs: [version, test]
+    # macos-14 is Apple Silicon. Intel is not built: torch (pinned in
+    # requirements.txt) publishes no macOS x86_64 wheels for this version.
     runs-on: macos-14
+    timeout-minutes: 150
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    outputs:
+      signing: ${{ steps.pkg.outputs.signing }}
+      missing_secrets: ${{ steps.pkg.outputs.missing_secrets }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -264,9 +267,7 @@ jobs:
           install() {
             for attempt in 1 2 3; do
               pip install --no-cache-dir --retries 5 --timeout 60 "$@" && return 0
-              echo "::warning::pip attempt $attempt failed for: $*"
-              pip cache purge || true
-              sleep $((attempt * 10))
+              echo "::warning::pip attempt $attempt failed for: $*"; pip cache purge || true; sleep $((attempt * 10))
             done
             return 1
           }
@@ -274,84 +275,161 @@ jobs:
           install pyinstaller==6.11.1
           install "$SPACY_MODEL_WHEEL"
       - name: Install the LLM runtime
-        # A corrupt wheel on this CPU index has killed builds before (see
-        # CLAUDE.md) - the open-ended >=0.3.16 constraint always resolves
-        # to the newest release, and when THAT specific file is corrupted
-        # at the source, retrying the same version just re-downloads the
-        # same broken bytes. Confirmed directly: a real macOS build hit
-        # `zlib.error: invalid block type` on 0.3.36 three times in a row,
-        # with `pip cache purge` reporting 0 files removed each time - the
-        # corruption is server-side, not a local cache artifact a purge
-        # could fix. Falls back through specific, previously-proven-good
-        # versions (0.3.35, then 0.3.16) rather than only retrying the
-        # one version that may itself be the broken file.
         run: |
-          install_llm_runtime() {
-            for spec in "llama-cpp-python>=0.3.16" "llama-cpp-python==0.3.35" "llama-cpp-python==0.3.16"; do
-              for attempt in 1 2 3; do
-                pip install --no-cache-dir --retries 5 --timeout 60 "$spec" \
-                  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu && return 0
-                echo "::warning::pip attempt $attempt failed for: $spec"
-                pip cache purge || true
-                sleep $((attempt * 10))
-              done
-              echo "::warning::all attempts for $spec failed; trying the next version"
+          for spec in "llama-cpp-python>=0.3.16" "llama-cpp-python==0.3.35" "llama-cpp-python==0.3.16"; do
+            for attempt in 1 2 3; do
+              pip install --no-cache-dir --retries 5 --timeout 60 "$spec" --extra-index-url "$LLAMA_INDEX" && exit 0
+              echo "::warning::pip attempt $attempt failed for: $spec"; pip cache purge || true; sleep $((attempt * 10))
             done
-            return 1
-          }
-          install_llm_runtime
+          done
+          exit 1
       - name: Fetch the bundled models
-        # After the runtime install, never before: the weights and the runtime
-        # are both required and neither should depend on the other's ordering.
         run: python buildtools/fetch_models.py
       - name: Confirm the model is installed before packaging
         run: python -c "import spacy; spacy.require_cpu(); spacy.load('en_core_web_trf'); print('model OK, CPU')"
       - name: Run the regression suite on this runner
-        # The Linux job gates the build, but PyMuPDF text extraction, font
-        # metrics and path handling differ per platform - and this is the exact
-        # machine that produces the installer.
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest tests -q
-      - name: End-to-end CLI run on this runner
-        env:
-          DOCANON_LLM: "0"
-        run: |
-          python -m tests.fixtures build/fixtures
-          python -m app.cli process build/fixtures/form.pdf --accept-all -o build/form.anon.pdf
-          python -m app.cli process build/fixtures/stacked.pdf --accept-all -o build/stacked.anon.pdf
-      - name: Build .app and .dmg
-        run: python buildtools/build.py --dmg
-      - name: Verify the bundle is actually complete
+      - name: Build the application bundle
+        run: python buildtools/build.py
+      - name: Verify the bundle is complete
         run: python buildtools/verify_bundle.py
-      - name: Self-test the FROZEN executable itself
-        # Same reasoning as the Windows job: the CLI run above only proves
-        # the runner's own unfrozen Python works, never the frozen bundle.
-        run: ./dist/DocumentAnonymizer.app/Contents/MacOS/DocumentAnonymizer --self-test
-      - name: Read version
-        id: v
-        run: echo "version=$(python -c 'import app.version;print(app.version.__version__)')" >> $GITHUB_OUTPUT
-      - name: Verify the artifact fits GitHub's release size limit
-        # Same reasoning as the Windows job - see that step's comment.
-        # GitHub Releases rejects any single asset over 2 GB
-        # (2147483648 bytes = exactly 2^31). Checked here, right after the
-        # real .dmg exists, before either upload step.
+      - name: Check the architecture
         run: |
-          file=$(ls dist/*.dmg)
-          size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file")
-          limit=2147483648
-          echo "artifact: $file ($size bytes, limit $limit)"
-          if [ "$size" -ge "$limit" ]; then
-            echo "::error::$file is $size bytes - GitHub Releases rejects anything >= $limit bytes. The build is complete and correct; it is too large to publish as a release asset. See CLAUDE.md's entry on the 2GB release limit."
-            exit 1
-          fi
+          file dist/DocumentAnonymizer.app/Contents/MacOS/DocumentAnonymizer
+          file dist/DocumentAnonymizer.app/Contents/MacOS/DocumentAnonymizer | grep -q arm64
+      - name: Sign, notarize (when configured) and package the DMG
+        id: pkg
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash installer/macos/sign_and_package.sh dist/DocumentAnonymizer.app "$VERSION" arm64 out
+      - name: Mount each DMG, copy the app out, launch the COPIED app
+        run: |
+          check() {
+            dmg="$1"
+            mnt=$(hdiutil attach "$dmg" -nobrowse -readonly | tail -1 | awk -F'\t' '{print $NF}')
+            echo "mounted $dmg at: $mnt"
+            test -d "$mnt/DocumentAnonymizer.app"
+            test -L "$mnt/Applications"
+            dest="$RUNNER_TEMP/Applications-$2"; rm -rf "$dest"; mkdir -p "$dest"
+            cp -R "$mnt/DocumentAnonymizer.app" "$dest/"
+            hdiutil detach "$mnt"
+            if [ "$2" = "signed" ]; then
+              codesign --verify --deep --strict --verbose=2 "$dest/DocumentAnonymizer.app"
+              spctl --assess --type execute --verbose=2 "$dest/DocumentAnonymizer.app"
+            fi
+            "$dest/DocumentAnonymizer.app/Contents/MacOS/DocumentAnonymizer" --self-test
+          }
+          check "${{ steps.pkg.outputs.dmg_unsigned }}" unsigned
+          if [ -n "${{ steps.pkg.outputs.dmg_signed }}" ]; then check "${{ steps.pkg.outputs.dmg_signed }}" signed; fi
+      - name: Size check (GitHub release size limit) and checksum
+        run: |
+          cd out
+          for f in *.dmg; do
+            size=$(stat -f%z "$f")
+            echo "dmg: $f ($size bytes)"
+            if [ "$size" -ge 2147483648 ]; then echo "::error::$f is over GitHub's 2 GB release-asset limit"; exit 1; fi
+            shasum -a 256 "$f" > "$f.sha256"
+          done
+          cat *.sha256
       - uses: actions/upload-artifact@v4
         with:
-          name: DocumentAnonymizer-macOS-v${{ steps.v.outputs.version }}
-          path: dist/*.dmg
+          name: macos-dmg
+          path: |
+            out/*.dmg
+            out/*.sha256
           if-no-files-found: error
-      - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/v')
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  release:
+    name: Release
+    needs: [version, test, windows, macos]
+    # Both platform builds must succeed; a tag always releases; a manual run
+    # releases only when asked to.
+    if: >-
+      github.ref_type == 'tag' ||
+      (github.event_name == 'workflow_dispatch' && inputs.release != 'none')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      SIGNING: ${{ needs.macos.outputs.signing }}
+      MISSING: ${{ needs.macos.outputs.missing_secrets }}
+      GH_TOKEN: ${{ github.token }}
+      MODE: ${{ github.ref_type == 'tag' && 'publish' || inputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          files: dist/*.dmg
-          generate_release_notes: true
+          path: assets
+          merge-multiple: true
+      - name: Checksums, manifest and release notes
+        run: |
+          cd assets
+          sha256sum -c *.sha256
+          sha256sum *.exe *.dmg > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          python3 - <<'PY'
+          import hashlib, json, os, glob
+          files = sorted(glob.glob("*.exe") + glob.glob("*.dmg"))
+          manifest = {
+            "application": "Document Anonymizer",
+            "version": os.environ["VERSION"],
+            "source_commit": os.environ["GITHUB_SHA"],
+            "source_ref": os.environ["GITHUB_REF"],
+            "workflow_run": f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}',
+            "macos_signing": os.environ.get("SIGNING") or "UNKNOWN",
+            "macos_missing_secrets": (os.environ.get("MISSING") or "").split(),
+            "artifacts": [{"file": f, "bytes": os.path.getsize(f),
+                           "sha256": hashlib.sha256(open(f, "rb").read()).hexdigest(),
+                           "platform": "Windows x64" if f.endswith(".exe") else "macOS arm64 (Apple Silicon)"}
+                          for f in files],
+          }
+          json.dump(manifest, open("build-manifest.json", "w"), indent=2)
+          print(json.dumps(manifest, indent=2))
+          PY
+          {
+            echo "## Document Anonymizer v${VERSION}"
+            echo
+            echo "Built by GitHub Actions from commit \`${GITHUB_SHA}\`."
+            echo
+            echo "| Download | Platform |"
+            echo "|---|---|"
+            for f in *.exe *.dmg; do
+              case "$f" in *.exe) p="Windows 10/11, x64 installer";; *SIGNED-NOTARIZED*) p="macOS 13+, Apple Silicon (arm64), signed and notarized";; *) p="macOS 13+, Apple Silicon (arm64), UNSIGNED";; esac
+              echo "| \`$f\` | $p |"
+            done
+            echo
+            if [ "$SIGNING" = "SIGNED_NOTARIZED" ]; then
+              echo "\`-SIGNED-NOTARIZED.dmg\` is signed with a Developer ID certificate and notarized by Apple."
+            else
+              echo "**No SIGNED-NOTARIZED DMG in this release**: the Apple signing secrets are not configured (missing: ${MISSING:-unknown})."
+            fi
+            echo "\`-UNSIGNED.dmg\` is NOT signed or notarized; macOS Gatekeeper blocks it on other Macs (right-click > Open, or see RELEASE_GUIDE.md)."
+            echo "The Windows installer is not code-signed; Windows SmartScreen may warn on first run."
+            echo
+            echo "Verify downloads against SHA256SUMS.txt. Intel Macs are not supported in this release."
+            echo
+            if [ -f ../docs/RELEASE_NOTES.md ]; then cat ../docs/RELEASE_NOTES.md; fi
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+      - name: Create the GitHub Release
+        run: |
+          tag="v${VERSION}"
+          flags=(--title "Document Anonymizer v${VERSION}" --notes-file assets/RELEASE_NOTES.md --target "$GITHUB_SHA")
+          if [ "$MODE" = "draft" ]; then flags+=(--draft); fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::release $tag already exists - releases are never overwritten. Bump the version."; exit 1
+          fi
+          gh release create "$tag" "${flags[@]}" \
+            assets/*.exe assets/*.dmg assets/SHA256SUMS.txt assets/build-manifest.json assets/RELEASE_NOTES.md
+          gh release view "$tag" --json url,isDraft,assets --jq '{url, isDraft, assets: [.assets[].name]}'

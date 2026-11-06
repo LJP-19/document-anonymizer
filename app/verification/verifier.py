@@ -151,8 +151,9 @@ def verify(plan: TransformationPlan, output_path: str) -> VerificationReport:
             _check_replacement_colour(report, plan, out)
             _check_skipped_preserved(report, plan, out_norm)
             _check_group_completeness(report, plan, out_norm)
-            _check_partial_redaction(report, plan, out_norm)
-            _check_group_residue(report, plan, out_norm)
+            outside = _token_counts_outside_targets(src, plan)
+            _check_partial_redaction(report, plan, out_norm, outside)
+            _check_group_residue(report, plan, out_norm, outside)
             _check_hidden_content(report, plan, output_path)
             _check_financials(report, src_text, out_text)
             _check_unsupported_content(report, plan)
@@ -258,7 +259,35 @@ def _check_group_completeness(report: VerificationReport, plan: TransformationPl
     )
 
 
-def _check_partial_redaction(report: VerificationReport, plan: TransformationPlan, out_norm: str) -> None:
+def _token_counts_outside_targets(src, plan: TransformationPlan) -> dict:
+    """How often each word occurs in the SOURCE outside every redaction box.
+
+    A word that is part of a redacted value can also be ordinary text elsewhere
+    on the page - "CITY" in "LAKESIDE CITY" and in the label "City, town, or post
+    office". Counting every surviving "city" as a fragment of the redacted value
+    failed verification on a correctly redacted return. The surviving count is
+    now compared with this baseline: a fragment of a value that really survived
+    raises the output count above it, so a genuine leak still fails.
+    """
+    counts: dict = {}
+    by_page: dict = {}
+    for t in plan.targets:
+        by_page.setdefault(t.page_no, []).append(t.rect)
+    for page_no, page in enumerate(src):
+        rects = by_page.get(page_no, [])
+        for w in page.get_text("words"):
+            cx, cy = (w[0] + w[2]) / 2, (w[1] + w[3]) / 2
+            if any(r[0] - 0.5 <= cx <= r[2] + 0.5 and r[1] - 0.5 <= cy <= r[3] + 0.5 for r in rects):
+                continue
+            for tok in re.split(r"[\s,]+", w[4]):
+                tok = tok.strip(".,;:()").lower()
+                if tok:
+                    counts[tok] = counts.get(tok, 0) + 1
+    return counts
+
+
+def _check_partial_redaction(report: VerificationReport, plan: TransformationPlan, out_norm: str,
+                             outside: Optional[dict] = None) -> None:
     """Catch residual fragments of an accepted value (spec section 39).
 
     The expected-residual allowance below covers a specific, narrow case: a
@@ -289,8 +318,10 @@ def _check_partial_redaction(report: VerificationReport, plan: TransformationPla
             count = _count_value_occurrences(out_norm, token)
             # Every standalone appearance of this token must be explained by
             # an intact full-phrase occurrence within the proven allowance -
-            # not merely "some allowance exists somewhere".
-            if count > min(allowance, full_phrase_count):
+            # not merely "some allowance exists somewhere" - or by the same
+            # word occurring as ordinary text outside every redaction box.
+            baseline = (outside or {}).get(token.lower(), 0)
+            if count > min(allowance, full_phrase_count) + baseline:
                 residual.append(f"{t.candidate_id}:{len(token)}chars")
     report.add(
         "no partial redaction",
@@ -301,7 +332,8 @@ def _check_partial_redaction(report: VerificationReport, plan: TransformationPla
     )
 
 
-def _check_group_residue(report: VerificationReport, plan: TransformationPlan, out_norm: str) -> None:
+def _check_group_residue(report: VerificationReport, plan: TransformationPlan, out_norm: str,
+                         outside: Optional[dict] = None) -> None:
     """Every value line of an accepted field group must be gone (section 39).
 
     Token-level checks miss the case where a detector covered part of a value
@@ -330,7 +362,8 @@ def _check_group_residue(report: VerificationReport, plan: TransformationPlan, o
                 if token.lower() in replacement_text:
                     continue
                 count = _count_value_occurrences(out_norm, token)
-                if count > min(allowance, full_line_count):
+                baseline = (outside or {}).get(token.lower(), 0)
+                if count > min(allowance, full_line_count) + baseline:
                     residue.append(f"{group_id}:{token[:2]}...")
     report.add(
         "no residual text in accepted field groups",

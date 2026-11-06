@@ -14,6 +14,38 @@ tool or an outside vendor.
 
 ## Status
 
+**0.42.0**: fail-closed authorization. One policy (`app/decisions/authorization.py`)
+decides what may be pseudonymized without a person; everything uncertain is listed for
+review and left readable until you press Redact, Keep or Edit, and the check is repeated
+at the transformation boundary. Installers are built only by GitHub Actions - see
+[RELEASE_GUIDE.md](RELEASE_GUIDE.md).
+
+**0.41.0**: strict PII-only - only confirmed PII is pseudonymized automatically. A model or
+pattern guess is applied only when a field label, a table column header or a label-confirmed person
+backs it up; anything else is listed for review and left readable. Text this app already replaced
+(in its replacement red) is never re-replaced. Organization and employer names are kept unless you
+choose to replace them. `python -m benchmark.run_fp_benchmark` measures false positives.
+
+**0.40.0**: one person, one synthetic identity. Name roles (given/surname) are learned
+from labels and full names before any pseudonym is generated; lone first names and
+surnames are replaced consistently when their context confirms them and held for review
+when it does not; joint filers stay separate people in order; possessives and titles are
+kept. Replacements stay red, written on the original baseline in the value's own font and
+size; removal is per glyph so labels beside a value survive. Output filenames keep their
+structure with only confirmed names replaced (no suffix). Mapping workbooks are written to
+a private per-user folder (`~/.document-anonymizer/mappings`, owner-only); delete that
+folder to remove them.
+
+**0.39.0**: accuracy audit against real, software-prepared multi-page tax returns.
+Form fields are now bound by column (every box on a row, not only the leftmost);
+form text is recognised by its typeset style; short (2-3 letter) surnames, scanline
+name controls, unlabelled birth dates and `(510)555-0142` phones are found; the
+cross-page label veto compares the same page only; redaction no longer erases the
+line above a value; IRS/agency mailing addresses, states alone, placeholders such as
+"Self-Prepared" and form headings are left alone; Presidio can no longer reach the
+network. Accuracy is now measured on the WRITTEN file
+(`python -m benchmark.run_forms_benchmark`, see "Accuracy measurement" below).
+
 **0.38.2** (includes 0.38.0): the local model is told which form label each value sits under. **0.38.0** adds protected regions with a unified candidate gate, the local model as a real proposal layer, identity-level Apply to All with a document-wide rescan, script-independent name matching, and a golden-corpus benchmark (`python benchmark/golden.py`). See IMPLEMENTATION_STATUS.md for what is tested and what is not.
 
 **v0.1.0 — working engine, minimal GUI, release pipeline in place.**
@@ -221,6 +253,28 @@ Needs Review. Silently dropping it is how `987-65-4321` disappeared from a
 column headed `SSN` during development.
 
 ---
+
+## Accuracy measurement
+
+Two complementary harnesses, both on invented data only:
+
+```bash
+python -m benchmark.run_forms_benchmark --out build/forms            # this build
+python -m benchmark.run_forms_benchmark --app-root ../old --out build/forms_old   # any other checkout
+```
+
+`run_forms_benchmark` builds multi-page, form-shaped fixtures (`benchmark/forms_corpus.py`:
+three households including a 3-letter surname, a blank form, an unrelated two-column/
+landscape layout), runs the real CLI end to end, and scores the WRITTEN PDF word by word
+against geometric ground truth (`benchmark/output_scoring.py`). Misses, false redactions
+and collateral damage from an oversized box all count. `python benchmark/run_benchmark.py`
+remains the candidate-level benchmark.
+
+For real documents, `buildtools/qa_run.py` processes files with the real application,
+verifies each output independently of the app's own verifier and writes only sanitized
+results (no values, no snippets); `buildtools/qa_report.py` turns them into a PDF and a
+JSON report. Keep real documents and these outputs in `qa_outputs/` (git-ignored); never
+commit them, and never ship the `_private_mappings` folder qa_run writes.
 
 ## Limitations — read before relying on this
 

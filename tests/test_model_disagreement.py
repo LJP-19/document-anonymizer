@@ -171,9 +171,16 @@ def test_a_plain_word_before_a_number_is_not_swallowed_into_the_identifier():
     """"Reference 123456789" redacted the word "Reference" along with the digits."""
     from tests.helpers_text import redacted
 
+    from tests.helpers_text import analysed
+
     got = redacted("Reference 123456789")
     assert all("Reference" not in text for text, _kind in got), got
-    assert ("123456789", "SSN") in got
+    # Strict PII-only (0.41.0): nine bare digits nobody labelled as an SSN are a
+    # shape, not a confirmed SSN - detected and listed for review, NOT applied.
+    _doc, result, decisions = analysed("Reference 123456789")
+    held = [c for c in result.candidates if c.text == "123456789"]
+    assert held and all(not decisions.is_actionable(c) for c in held), held
+    assert all(c.ambiguous for c in held)
 
 
 def test_a_partly_matched_phone_number_is_still_completed():

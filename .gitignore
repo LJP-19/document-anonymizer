@@ -13,3 +13,11 @@ out/
 resources/models/
 
 benchmark/_scratch/
+
+# QA outputs and working copies of diagnostic documents - never commit
+qa_outputs/
+
+# Generated at build time by buildtools/make_icon.py
+resources/icons/app-*.png
+resources/icons/app.ico
+resources/icons/app.icns

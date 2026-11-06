@@ -132,6 +132,15 @@ class Candidate:
     #: unset, which is treated as CONFIRMED by every reader for backward
     #: compatibility.
     adjudication: str = ""
+    #: A name component that matches a registered person but whose context
+    #: says it may be someone or something else ("Corin River Trail", "Bob Tash"
+    #: when only "Ann Tash" is registered). Reported for review, never applied
+    #: automatically (decisions/manager.py).
+    ambiguous: bool = False
+    #: VERIFIED label binding (decisions.authorization.annotate_label_binding):
+    #: the value of a recognised, typed identity label that expects this type.
+    #: A bare group_id is not this - it is attached to anything on a value line.
+    label_confirmed: bool = False
 
     @property
     def id(self) -> str:
@@ -207,6 +216,11 @@ class DetectionResult:
     #: used - kept so a later stage (second pass, entity rescan) applies the SAME rules.
     gate_log: list = field(default_factory=list)
     protection: object = None
+    #: (font, colour) styles of the form's own text (layout_style.form_styles),
+    #: so later stages that add candidates apply the same style veto.
+    form_styles: set = field(default_factory=set)
+    #: Words this document prints in its form typeface (layout_style.form_vocabulary).
+    form_vocabulary: set = field(default_factory=set)
     pages_analysed: int = 0
     pages_needing_ocr: int = 0
     confirmed_count: int = 0

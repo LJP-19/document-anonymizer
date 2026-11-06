@@ -18,8 +18,12 @@ COLON_RE = re.compile(r"^(?P<label>[^:]{2,60}):\s*(?P<value>.*)$")
 LEADER_RE = re.compile(r"[.\u2026_\-]{2,}\s*$")
 
 
+#: A list bullet before a label ("- Date of Withdrawal:", "• Account Number:").
+BULLET_RE = re.compile(r"^[\s\-\u2010-\u2015\u2022\u25cf\u25aa*]+")
+
+
 def _clean(text: str) -> str:
-    return LEADER_RE.sub("", text).strip()
+    return BULLET_RE.sub("", LEADER_RE.sub("", text)).strip()
 
 
 GENERIC_LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9 '&/().,\-]{1,44}$")
@@ -48,7 +52,39 @@ def _buried(cleaned: str, match) -> bool:
     label, and the client's name in it was never redacted. A real label leads with
     its phrase ("Home address (number and street). If you have ...", "Your first
     name and middle initial"): at most a couple of modifier words come before it."""
-    return len(cleaned.split()) > 4 and len(cleaned[: match.start()].split()) > 2
+    before = cleaned[: match.start()]
+    # A conditional lead-in is form idiom, not prose: "If joint return, spouse's
+    # first name and middle initial". The label phrase leads once the "If ...,"
+    # clause has ended at its comma. Without this the spouse's first-name field
+    # on Form 1040 had no label at all, and the name depended on a model guess.
+    lead_in = re.match(r"^\s*if\b[^,.;:]{0,40},\s*", before, re.I)
+    if lead_in:
+        before = before[lead_in.end():]
+    return len(cleaned.split()) > 4 and len(before.split()) > 2
+
+
+#: A place NAME ending in a label word: "Lakeside City", "SALT LAKE CITY", "Jersey City".
+_PLACE_NAME = re.compile(r"^(?:[^\W\d_][\w.'’\-]*\s+){1,3}(?:city|town)\.?$", re.I)
+
+
+def _is_place_name(cleaned: str) -> bool:
+    """True for a city value that merely ENDS in "City"/"Town".
+
+    The address label pattern matched the word "CITY" inside the value "UNION
+    CITY", made the value a protected label, and the city was never redacted -
+    on every page it appeared. A real label LEADS with its word ("City, town or
+    post office") or is the word alone; a place name has its own words first.
+    The words before it must not be form vocabulary, so "Your city" and
+    "Home town" stay labels.
+    """
+    if not _PLACE_NAME.match(cleaned):
+        return False
+    from .heuristics import FORM_VOCABULARY
+
+    words = [w.strip(".,'’").lower() for w in cleaned.split()[:-1]]
+    modifiers = FORM_VOCABULARY | {"your", "my", "his", "her", "their", "spouse's", "mailing", "current",
+                                   "previous", "birth", "resident", "residence", "foreign"}
+    return not any(w in modifiers for w in words)
 
 
 def _match_label(text: str, rs: RuleSet) -> Optional[tuple[list[PiiType], bool, bool]]:
@@ -66,10 +102,17 @@ def _match_label(text: str, rs: RuleSet) -> Optional[tuple[list[PiiType], bool, 
         # Require a substantial match so that a stray "name" inside unrelated
         # prose does not turn the whole line into a field label.
         if m and len(m.group().strip()) >= 3 and not _buried(cleaned, m):
-            span = len(m.group().strip())
+            # English labels put the head noun LAST: "Spouse's/RDP's DOB" is a
+            # date of birth, "Taxpayer SSN" an SSN. Ranking by match length
+            # alone made the role word win ("spouse" is longer than "dob"), so
+            # a DOB column was typed PERSON. Rank by where the match ENDS, then
+            # by length.
+            span = (m.end(), len(m.group().strip()))
             if best is None or span > best[1]:
                 best = (list(rule.expects), span)
     if best is not None:
+        if _is_place_name(cleaned):
+            return None
         return best[0], False, False
     # Unrecognised but label-shaped. Real forms are full of these; refusing to
     # bind their values is the main source of missed PII. The values themselves

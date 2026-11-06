@@ -50,7 +50,10 @@ def test_a_typed_finding_becomes_a_real_candidate_that_no_detector_recognised():
     assert c.pii_type is PiiType.CITIZENSHIP and c.source is Source.AUDIT and c.needs_review
     assert any("AI:" in e.detail for e in c.evidence)
     dm = DecisionManager(); dm.register(added)
-    assert dm.state(c) is DecisionState.ACCEPTED, "a confident typed AI finding is applied and flagged"
+    # Strict authorization (0.42.0): a model's finding is a proposal - typed,
+    # listed and flagged, but held for a person; never applied on its own.
+    assert dm.state(c) is DecisionState.SKIPPED and dm.origin(c) == "REVIEW_REQUIRED"
+    assert not dm.is_actionable(c)
 
 
 def test_a_type_disagreement_with_a_detector_is_surfaced_not_silently_resolved():
@@ -121,7 +124,10 @@ def test_the_model_cannot_make_a_figure_or_a_label_redactable():
 def test_a_strong_candidate_survives_an_ai_objection_but_is_flagged():
     _d, result, dm, _f = run("SSN: 123-45-6789", wrong=["123-45-6789"])
     (c,) = by_text(result, "123-45-6789")
-    assert dm.state(c) is DecisionState.ACCEPTED and c.needs_review and "AI thinks" in c.review_reason
+    # It SURVIVES (a weak model never deletes strong evidence) and is flagged -
+    # and a flag is an absolute veto on automatic redaction (0.42.0): it waits.
+    assert c.needs_review and "AI thinks" in c.review_reason
+    assert not dm.is_actionable(c) and dm.origin(c) == "REVIEW_REQUIRED"
 
 
 def test_every_line_of_a_long_page_reaches_the_model():

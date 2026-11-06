@@ -51,6 +51,11 @@ class EntityRegistry:
     document_name: str = ""
     _records: dict[EntityKey, EntityRecord] = field(default_factory=dict)
     _taken: set[str] = field(default_factory=set)
+    #: Every word of every value detected in the document. A pseudonym must not
+    #: contain one: a generated city that equals a real
+    #: value redacted elsewhere puts that value back into the file - measured,
+    #: the independent verifier found two such on a real return.
+    document_words: set = field(default_factory=set)
 
     #: Types whose value is the digits, however they are punctuated. "123456789"
     #: and "123-45-6789" are one SSN and must get one pseudonym.
@@ -107,6 +112,11 @@ class EntityRegistry:
             digits = _re.sub(r"\D", "", text)
             if digits:
                 return EntityKey(pii_type, digits, discriminator)
+        if pii_type in (PiiType.STREET, PiiType.ADDRESS) and _re.match(r"^\s*\d", text or ""):
+            # One street line, one entity: detectors type the same "4817 HARBORVIEW
+            # CMN" STREET on one page and ADDRESS on another, and keying by type
+            # gave the same address two different pseudonyms (0.41.0).
+            return EntityKey(PiiType.ADDRESS, self.normalize(text), discriminator)
         if pii_type is PiiType.ORG_PRIVATE:
             return EntityKey(pii_type, self._org_core(text), discriminator)
         if pii_type is PiiType.PERSON:
@@ -152,7 +162,8 @@ class EntityRegistry:
 
         pseudonym = generate(pii_type, text, scope=f"{self.scope}|{discriminator}")
         salt = 0
-        while pseudonym.lower() in self._taken or _shares_token(text, pseudonym):
+        while (pseudonym.lower() in self._taken or _shares_token(text, pseudonym)
+               or self._reuses_document_word(pseudonym)):
             salt += 1
             pseudonym = generate(pii_type, f"{text}#{salt}", scope=f"{self.scope}|{discriminator}")
             if salt > 25:  # pathological; accept rather than loop forever
@@ -163,6 +174,13 @@ class EntityRegistry:
         if self.roster is not None:
             self.roster.record(pii_type, text, pseudonym, self.document_name)
         return pseudonym
+
+    def _reuses_document_word(self, pseudonym: str) -> bool:
+        if not self.document_words:
+            return False
+        import re as _re
+
+        return any(w.lower() in self.document_words for w in _re.findall(r"[^\W\d_]{4,}", pseudonym))
 
     def override(self, pii_type: PiiType, text: str, pseudonym: str, discriminator: str = "") -> None:
         key = self.key_for(pii_type, text, discriminator)

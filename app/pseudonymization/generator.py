@@ -34,8 +34,19 @@ def _mask_preserving_shape(value: str, rng_seed: int) -> str:
     out = []
     h = hashlib.sha256(str(rng_seed).encode()).digest()
     i = 0
-    for ch in value:
-        if ch.isdigit():
+    # Letters are only identifier characters inside a token that also has
+    # digits ("AB12345"). A token of letters alone is a WORD - a caption caught
+    # inside the span, a code such as "TTMac" - and rewriting it letter by
+    # letter is what produced scrambled replacements ("Udju lj Lborgoifrg") on
+    # real returns. Words are kept verbatim.
+    word_chars: set[int] = set()
+    for m in re.finditer(r"\S+", value):
+        if not any(c.isdigit() for c in m.group()):
+            word_chars.update(range(m.start(), m.end()))
+    for pos, ch in enumerate(value):
+        if pos in word_chars:
+            out.append(ch)
+        elif ch.isdigit():
             out.append(digits[h[i % len(h)] % 10])
             i += 1
         elif ch.isalpha():
@@ -89,6 +100,19 @@ def generate_for_household(value: str, household: str, scope: str = "document") 
 NAME_SUFFIX = re.compile(r"\b(jr|sr|ii|iii|iv|md|cpa|esq)\b\.?$", re.I)
 
 
+def _match_house_number(out: str, original: str, fake) -> str:
+    """Keep the original house number's digit count: "4817 MAIN ST" must not
+    become "08148 ...". A 4-digit number gets a 4-digit number, never a leading
+    zero; an original with no leading number is left as generated."""
+    m_orig = re.match(r"^\s*(\d+)\b", original or "")
+    m_out = re.match(r"^(\d+)\b", out)
+    if not m_orig or not m_out:
+        return out
+    n = len(m_orig.group(1))
+    number = str(fake.random_int(1, 9)) + (fake.numerify("#" * (n - 1)) if n > 1 else "")
+    return number + out[m_out.end():]
+
+
 def generate(pii_type: PiiType, value: str, scope: str = "document") -> str:
     """Return a stable pseudonym for `value` of type `pii_type`."""
     seed = _seed(scope, pii_type, value)
@@ -104,7 +128,10 @@ def generate(pii_type: PiiType, value: str, scope: str = "document") -> str:
         return _fit_length(options, target)
 
     if pii_type in (PiiType.STREET, PiiType.PO_BOX):
-        return _fit_length([fake.street_address() for _ in range(5)], target)
+        out = _fit_length([fake.street_address() for _ in range(5)], target)
+        out = _match_house_number(out, value, fake) if pii_type is PiiType.STREET else out
+        letters = [ch for ch in value if ch.isalpha()]
+        return out.upper() if letters and all(ch.isupper() for ch in letters) else out
 
     if pii_type is PiiType.CITY_STATE:
         if "," in value:
@@ -114,11 +141,30 @@ def generate(pii_type: PiiType, value: str, scope: str = "document") -> str:
         return _fit_length([fake.city() for _ in range(6)], target)
 
     if pii_type is PiiType.ADDRESS:
-        if re.search(r",\s*[A-Z]{2}", value):
-            zip_part = re.search(r"\d{5}(?:-\d{4})?", value)
-            base = f"{fake.city()}, {fake.random_element(_STATE_CODES)}"
-            return f"{base} {fake.postcode()}" if zip_part else base
-        return _fit_length([fake.street_address() for _ in range(5)], target)
+        from ..detection.entities_pass import _STATE_CODES as _ALL_STATE_CODES
+
+        # Same KIND of address as the original. A city on its own ("UNION
+        # CITY") or a city/state/ZIP line written without a comma, as tax
+        # software prints it ("LAKESIDE CITY CA 94621"), used to get a STREET
+        # address - a replacement of the wrong kind, in the wrong case.
+        stripped = value.strip()
+        upper = stripped.isupper()
+        csz = re.match(r"^(?P<city>[^\d,]+?),?\s+(?P<st>[A-Z]{2})\.?(?:\s+(?P<zip>\d{5}(?:-\d{4})?))?$", stripped)
+        if re.search(r",\s*[A-Z]{2}", stripped) or (csz and csz.group("st").lower() in _ALL_STATE_CODES):
+            zip_part = re.search(r"\d{5}(?:-\d{4})?", stripped)
+            sep = ", " if "," in stripped else " "
+            base = f"{fake.city()}{sep}{fake.random_element(_STATE_CODES)}"
+            if zip_part:
+                plus4 = f"-{fake.numerify('####')}" if "-" in zip_part.group() else ""
+                out = f"{base} {fake.postcode()}{plus4}"
+            else:
+                out = base
+            return out.upper() if upper else out
+        if not any(ch.isdigit() for ch in stripped):
+            out = _fit_length([fake.city() for _ in range(6)], target)
+            return out.upper() if upper else out
+        out = _match_house_number(_fit_length([fake.street_address() for _ in range(5)], target), stripped, fake)
+        return out.upper() if upper else out
 
     if pii_type is PiiType.POSTAL_CODE:
         return fake.postcode() if len(value) <= 5 else f"{fake.postcode()}-{fake.numerify('####')}"

@@ -2382,3 +2382,244 @@ Local runs on the small spaCy model, or without GLiNER, missed 18 failures that 
 
 ## The model is told the label; the label's type is not overruled by the model
 `_label_hints` feeds "value <- label" pairs to the adjudication prompt. A value whose type its label agrees with is never dropped because the model said "form" or "business" (`label_agreed` in `analyse`). Do not remove that filter: a small model will call a name "business" now and then.
+
+
+## v0.39.0 audit: root causes found on real software-prepared returns
+
+Measured on three real 108-page returns (never committed) and reproduced on the
+fictional `benchmark/forms_corpus.py`. Each item has a test in
+`tests/test_form_layout_regressions.py`.
+
+- **Stacked values are found by COLUMN, not reading order** (`groups._value_lines_for`).
+  The old loop walked every line below a label in page order and `break`ed at the
+  first misaligned one - on a row of side-by-side labels that was the LEFT column's
+  value, so only the leftmost label on any row ever bound a value. Lines in another
+  column are skipped (`continue`), never fatal. Do not turn that back into `break`.
+- **`veto_by_label_geometry` compares the SAME PAGE only.** It used to test every
+  label on every page; on a long return nearly every x/y is a label somewhere, and
+  detections were deleted document-wide.
+- **A city value ending in "City"/"Town" is not a label** (`labels._is_place_name`).
+  The address-label regex matched "CITY" inside "LAKESIDE CITY" and protected it.
+- **Labels are typed by their HEAD NOUN** (match nearest the end): "Spouse's DOB" is
+  a DOB, not a PERSON.
+- **Short names (2-3 letters) are tracked** - `entities_pass._short_name_ok/_short_form_ok/
+  _short_match_ok`. `MIN_PROPAGATION_LENGTH` silently excluded Li/Wu/Ng/Lim/Kim/Ho from
+  identity tracking. A short token propagates only when a PERSON field label confirmed
+  it, it is written Capitalised or ALL CAPS, is not a state code or form word, and it
+  is flagged for review. Do not drop the case guard: lowercase "li"/"ng" in prose is
+  not the person.
+- **Name control on scanlines** (`name_control_hits`): first 4 letters of a known
+  surname, only on code-like lines (>=50% numeric tokens).
+- **Form text is recognised by TYPESET STYLE** (`layout_style.py`). A (font, colour)
+  is the form's when it carries >=5 WHOLE-LINE labels and is almost never (<=3%) a
+  value under a label of another style - and only when the document has a value FONT
+  (judged across colours, e.g. Courier). Two earlier criteria failed on a real
+  108-page return (one rejected the template font, one made the VALUE font "form");
+  the measured numbers are in the docstring - re-measure before changing it.
+  Uses: (1) name/org/place PROPOSALS in a form style are vetoed (main pass and second
+  pass via `DetectionResult.form_styles`); (2) `groups._value_lines_for` stops a field
+  at a line set in a form style, so a label never binds the instruction lines below it.
+  Styles are learned from a STRICT pre-pass of the grouping (no column skipping).
+- **The document's own vocabulary** (`layout_style.form_vocabulary` + running chrome
+  lines): a model-only person/org made only of words this document prints in its form
+  typeface (>=3 times) or in a repeated non-name chrome line is dropped, main pass and
+  second pass. Never contains a word a rule or field label bound as a value. Name-shaped
+  repeated lines are NOT chrome (a person in a fixed header is still a person).
+- **A model-only guess no longer exempts a repeated line from the chrome veto**
+  (`form_text.detect_form_text`) unless the line itself is name-shaped. Rules, labels,
+  joint names and propagation still exempt it - the CLAUDE.md rule against narrowing
+  the exemption to labels/groups is kept; only bare NER guesses lost it.
+- **A date-only line with birth-plausible years beside an identity block is a DOB**
+  (`engine._dates_beside_identity`): machine-readable state pages print values with no
+  caption. Flagged for review; recent dates and lines with money are untouched.
+- **Redaction removal rectangle is inset 20% vertically** (`redactor.removal_rect`).
+  PyMuPDF removes EVERY character whose box intersects the rectangle; full
+  ascent-to-descent boxes on a dense form erased the label row above a value. Only the
+  removal rect - replacement placement is unchanged, `insert_text(` fallback intact.
+- **Pseudonyms never contain a word of any detected value** (`EntityRegistry.document_words`,
+  names seeded via `note_original`): a generated city equal to a real value redacted
+  elsewhere put that value back into the file.
+- **Public bodies' mailing addresses are form text** (`form_text.AGENCY`): the block
+  under "Internal Revenue Service" etc. It lives in form_text so every path (gate,
+  second pass) honours it.
+- **A state alone is not PII** (`engine._drop_bare_states`); a model-only STREET with
+  no digit is a public place (`_drop_numberless_model_streets`); honorifics are not
+  part of the redacted name (`_trim_honorifics`); placeholders like "Self-Prepared"
+  under a name label are not names (`groups.PLACEHOLDER_VALUES`).
+- **Phone `(510)555-0142`** (no separator after the bracketed area code) is how tax
+  software prints phones; the rule required a separator.
+- **Address pseudonyms keep the original's KIND and case** - a city alone gets a city,
+  a comma-less "CITY ST ZIP" line gets one, ZIP+4 stays ZIP+4.
+- **Verifier fragment checks have a source baseline** (`_token_counts_outside_targets`):
+  a word of a redacted value that also occurs as ordinary text outside every box is
+  not a fragment. A real leak still exceeds the baseline and fails - a test pins it.
+
+## Presidio must never reach the network, and only proposes personal dates
+
+`presidio_adapter._force_offline_tldextract()` - presidio's EmailRecognizer calls
+`tldextract.extract()`, whose default extractor downloads the public-suffix list on
+first use. Observed: a runtime request to publicsuffix.org while a document was open.
+`_personal_dates_only` holds DATE_TIME proposals to the deterministic DOB rule's
+contract (a birth/death/personal-event cue). Presidio is also very slow on long
+documents (one transformer pass per LINE): a 108-page return took >45 minutes with
+it installed and ~2-4 minutes without. It is optional and not shipped.
+
+## Output-level scoring is the accuracy measure
+
+`benchmark/run_forms_benchmark.py` runs the real CLI and scores the WRITTEN file word
+by word against geometric truth (`benchmark/output_scoring.py`). A detection that never
+became a redaction, a box that erased a label, and a value missed on page 7 all count.
+`--app-root` scores any other checkout for a baseline. Run it before claiming an
+accuracy change works; a candidate-text benchmark cannot see collateral damage.
+
+`buildtools/qa_run.py` produces QA outputs for real documents with an independent
+verification and writes only sanitized results (no values, no snippets). Its
+`_private_mappings` folder (the pseudonym workbook) holds originals - never ship it.
+
+## A line that opens with its own caption is the NEXT field (groups._OWN_LABEL)
+
+Column-aware binding (above) let "- Routing Transit Number:" bind the line below
+it, "- Date of Withdrawal:  <date>", as its value; the date satisfied the
+digit-type check and the line was typed ROUTING_NUMBER and shape-masked into
+scrambled letters. A stacked candidate that starts with "<caption>:" ends the
+field. Label detection also ignores a leading bullet/dash now (`labels.BULLET_RE`).
+Lesson: every relaxation of the stacking loop needs a matching "this is a new
+field" stop; check the real-sample previews, not only the scores.
+
+## v0.40.0: one person, one synthetic identity (owner's phase-2 rules)
+
+Tests: `tests/test_pseudonymization_identity.py` (owner's acceptance tests A-J).
+
+- **Name ROLES are learned before anything is generated** (`plan._seed_name_roles`,
+  `NameRegistry.seed_role/seed_full_name`): field labels first ("first name" ->
+  given, "last name" -> surname), then full names longest first. Before this the
+  FIRST sighting decided, and a first name met alone became a surname ("Espinoza
+  Harris"). Never generate a name pseudonym before seeding.
+- **Possessives are grammar** (`engine._trim_possessives`, `NameRegistry.pseudonym`):
+  "Quell's" became a separate token and the person got a second surname.
+- **Given-name aliases propagate, with context validation**
+  (`entities_pass._component_context_is_ambiguous`). A lone component followed by an
+  unregistered capitalised word ("Corin River Trail", "Smith Barney"), or written in
+  lower case on a mixed-case line, is `Candidate.ambiguous`: listed for review and
+  NEVER applied automatically (`decisions/manager.py`). The word BEFORE is not used
+  (sentences start with capitals). The org-suffix guard looks past the person's other
+  name words (`_after_known_components`: "Marcus [Feldman] Manufacturing Inc.").
+- **A registered person's name word typed as a place by a model is that person**
+  (`engine._retype_known_name_components`).
+- **Joint names**: the standalone pattern takes a preceding name word into the first
+  person ("Ann Tash & Bo Tash" -> two full names) and refuses place/form words
+  (`heuristics._PLACE_WORDS`); in the form's typeface it is a proposal and is vetoed.
+- **Filenames keep their structure** (`session.safe_output_name`): only CONFIRMED
+  identities are replaced, with the document's own pseudonyms; no suffix is added;
+  name-shaped words found only in the filename are listed in `filename_review`, never
+  guessed (owner's rule - guessing rewrote words such as "Latest"/"Filed").
+- **Mapping workbooks live in a private per-user folder by default**
+  (`~/.document-anonymizer/mappings`, 0700; files 0600; `roster.mapping_path_for`),
+  never beside the outputs. Remove them by deleting that folder.
+- **Replacement text stays red** (owner, phase 2, explicitly) - `plan.RED`. Placement:
+  `redactor._insert_at_baseline` writes at the value's own x and baseline, in the
+  value span's own font/size (`Line.span_at`), down to 80% size if the next word or
+  target on the row is close; otherwise the v0.8.3 boxed logic and its `insert_text(`
+  fallback run unchanged.
+- **Removal is per glyph** (`redactor.removal_rects`): one rectangle at the centre of
+  each of the value's own glyphs (`Target.char_rects`), kept clear of words above and
+  below. A single rectangle per value either took a touching label word with it or,
+  shrunk further, left part of the value behind (verified FAIL on real returns). Every
+  target glyph is always intersected; never trade that away for neighbours.
+- **Form style by family**: an oblique/condensed cut of a template font in the template
+  colour is form text too (`layout_style.in_form_style`).
+- **Shape masking keeps words** (`generator._mask_preserving_shape`): letters are only
+  substituted inside tokens that contain digits - the source of scrambled replacements.
+- **Only confirmed PII is applied by default**: the QA runner uses the app's own
+  decisions (`buildtools/qa_run.py`; `--accept-all` is opt-in) and reports what was held.
+
+## v0.40.0 final-QA fixes (each found on a real return, each mutation-checked)
+
+- **Seed surname labels first; take only the FIRST word under a given-name label**
+  (`plan._seed_name_roles`). A dependents "(1) First name" column binds the whole
+  "First M Last" line; seeding all of it as given names gave the surname a
+  first-name pseudonym everywhere it stood alone, the output filename included.
+- **An "If ...," lead-in does not bury a label** (`labels._buried`). Form 1040's
+  "If joint return, spouse's first name and middle initial" had no label, so the
+  spouse's first name rested on a model guess and the production model missed it.
+- **House numbers keep their digit count** (`generator._match_house_number`): no
+  "4817" -> "08148".
+- **A name-shaped model "street" is retyped, not dropped**
+  (`engine._drop_numberless_model_streets`). en_core_web_trf tags some unlabelled
+  names beside an address as STREET; dropping them failed test_unicode_names on the
+  CI model while the dev model passed - run the suite on trf before claiming green.
+
+## 0.41.0: strict PII-only - ONLY CONFIRMED PII IS PSEUDONYMIZED AUTOMATICALLY (owner's release gate)
+
+Tests: `tests/test_false_positive_regressions.py`; benchmark: `python -m benchmark.run_fp_benchmark`
+(must report 0 wrongly changed words). Do not trade this away for recall.
+
+- **Text in the replacement red is a hard protected region** (`protection.PRIOR_REPLACEMENT`,
+  `prior_replacement_runs`). An earlier run already replaced it; on real inputs earlier versions had
+  put pseudonyms where FORM WORDING was, and re-pseudonymizing them was 1,433 of 1,747 replacements.
+  A proposal touching it is rejected before subjects are identified (`drop_prior_replacements`) and
+  at the gate - so a synthetic name never enters the registry. A rule match is clipped like any
+  other protected text. Manual additions still override.
+- **Corroboration gate** (`protection.hold_unconfirmed_proposals`, main pass AND second pass): a
+  model/heuristic/pattern proposal is applied only if label-bound, typed by a table column header,
+  a name control, propagation of a label-confirmed entity, or made only of a label-confirmed
+  person's name words. Otherwise `ambiguous` -> held for review, NEVER deleted.
+- **Subjects come only from labels or deterministic rules** (`identify_subjects`); a confident model
+  guess no longer qualifies, and held candidates never seed propagation.
+- `review_unless_context` (rule YAML): a shape-only match (bare nine digits) is held.
+- Organization/employer names are held (`DecisionManager.register`), never replaced unless a person
+  decides. "Firm's name"/"Employer's name" are ORG labels (possessive allowed).
+- Same-row binding (`groups._value_lines_for` Case C) requires a STYLE CHANGE between label and
+  value, a non-label value, >=2 alphanumerics and no symbol-font glyph - each guard is a real FP.
+- Strict scoring for real inputs that earlier versions processed: inherited red text is EXCLUDED
+  and counted separately; counting it as PII hid exactly the damage the owner saw.
+
+## 0.42.0: ONE fail-closed authorization policy (owner's rule - do not weaken)
+
+Report: `docs/ROOT_CAUSE_AUTHORIZATION.md`. Tests: `tests/test_authorization.py`.
+Mutation check: `qa_outputs/tools/mutation_p4.py` (private) - removing any safeguard
+below fails tests.
+
+- `app/decisions/authorization.py::assess()` is the ONLY place that decides whether a
+  candidate may be transformed without a person. Never re-implement it elsewhere.
+  Auto-approval needs: a VERIFIED typed label (`label_confirmed`), OR a specific
+  identifier whose OWN line names its type before the value plus a passing own-rule
+  validator, OR a reliable occurrence of a label-confirmed entity (propagation
+  "same value as an entity", name control, or only a confirmed person's name words).
+- Absolute vetoes: `needs_review`, `ambiguous`, UNRESOLVED, untyped, ORG_PRIVATE,
+  blackout, own-rule validator failure. PROBABLE vetoes unless the entity rule holds.
+- `label_confirmed` (annotate_label_binding) is NOT "has a group_id": `_cover_span`
+  attaches group ids to anything on a value line. Only a recognised, typed (not non-PII, not unknown)
+  label that expects the type binds. A verified label may clear only a DETECTOR'S doubt
+  about its own type/score (`LABEL_RESOLVABLE_DOUBTS`) - never an AI objection,
+  validator failure, ambiguity or soft-protection conflict.
+- A rule's context list (e.g. "taxpayer") finds values; it does not authorize them.
+  "Taxpayer name:" above "Reference 573918204" made an SSN once.
+- `DecisionManager.register` is fail-closed; every Decision records `origin`
+  (AUTO_APPROVED / REVIEW_REQUIRED / USER_*) and a reason. `set_state` = a person.
+- `build_plan` re-assesses every AUTO approval, refuses anything without authorization
+  (`plan.refused`), tags `Target.authorized_by` and writes `plan.authorization_log`
+  (no text). `apply_plan` raises `UnauthorizedTargetError` for an untagged target.
+- Bulk paths (`--accept-all`, `Batch.redact_everything`, "Redact everything") call
+  `approve_auto_eligible` only. `apply_to_all`/`apply_to_entity` never approve an
+  ambiguous occurrence. An explicit manual "apply to the same" approves its
+  evidence-linked full forms (`_entity_variants`).
+- `us_zip` and `ssn_plain_unlabelled` are `review_unless_context`; a shape-only loser
+  does not create a "detectors disagree" flag (`resolve._absorb`).
+
+## Releases are built ONLY by GitHub Actions (0.42.0)
+
+`RELEASE_GUIDE.md` is the operator guide. `.github/workflows/build-release.yml`:
+version check (tag must equal `app/version.py`) -> Linux tests + FP benchmark (zero) ->
+Windows (Inno Setup `installer/DocumentAnonymizer.iss`, silent install + installed-app
+self-test + uninstall) and macOS arm64 (`installer/macos/sign_and_package.sh`: signs and
+notarizes only with ALL six APPLE_* secrets, otherwise an `-UNSIGNED.dmg`; DMG mounted
+and the copied app self-tested) -> release job (needs all; checksums verified,
+`SHA256SUMS.txt`, `build-manifest.json`, notes; `gh release create`, never overwrites).
+- A `--windowed` exe must be run with `Start-Process -Wait -PassThru` in PowerShell, or
+  its exit code is never seen.
+- Intel macOS is not built: the pinned torch has no macOS x86_64 wheel. Do not advertise it.
+- Ordinary pushes do not build. `workflow_dispatch` needs the workflow on the default
+  branch to appear in the UI; a tag push runs the workflow file of the tagged commit.
+- Icons are generated in `build.py` via `make_icon.py` (PyMuPDF rasterizes the SVG,
+  Pillow writes .ico/.icns); generated files are git-ignored.

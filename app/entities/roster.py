@@ -18,6 +18,7 @@ attached by accident.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -187,19 +188,39 @@ def write_mapping_workbook(entries: Iterable[RosterEntry], path: Path) -> Path:
         sheet.column_dimensions[get_column_letter(column)].width = width
     sheet.freeze_panes = "A3"
 
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    _private_dir(Path(path).parent)
     workbook.save(path)
+    try:
+        os.chmod(path, 0o600)   # owner read/write only: this file re-identifies people
+    except OSError:
+        pass
     return Path(path)
+
+
+#: Default home of mapping workbooks: private to the user, never beside the
+#: anonymised documents, never inside a project or output folder.
+PRIVATE_MAPPINGS_DIR = Path.home() / ".document-anonymizer" / "mappings"
+
+
+def _private_dir(directory: Path) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
+    return directory
 
 
 def mapping_path_for(output_pdf: Path, folder: Optional[Path] = None) -> Path:
     """Where the mapping for one document goes.
 
-    Defaults to a `mappings` folder beside the output rather than next to it, so
-    selecting "everything in this folder" to attach to an email does not pick it
-    up.
+    0.40.0: by default a PRIVATE per-user folder (~/.document-anonymizer/mappings,
+    owner-only permissions), not a `mappings` folder beside the output - an
+    output folder is exactly what gets zipped or emailed, and the mapping turns
+    every pseudonym back into the client's real identity. An explicitly chosen
+    folder is honoured. Remove all mappings by deleting that folder.
     """
     output_pdf = Path(output_pdf)
     stem = re.sub(r"\.anonymized$", "", output_pdf.stem)
-    directory = Path(folder) if folder else output_pdf.parent / "mappings"
+    directory = Path(folder) if folder else Path.home() / ".document-anonymizer" / "mappings"
     return directory / f"{stem}.{MAPPING_SUFFIX}"

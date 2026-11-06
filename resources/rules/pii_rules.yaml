@@ -38,6 +38,10 @@ rules:
     pattern: '(?<![\d\-])\d{9}(?![\d\-])'
     confidence: 0.6
     validator: ssn
+    # Strict PII-only (0.41.0): a bare nine-digit number nobody labelled is held
+    # for review. On real returns it was a software control number on a code
+    # line, printed identically on two different people's returns.
+    review_unless_context: true
 
   - name: ssn_plain
     # Nine digits with no separators. Common in exported data and fillable
@@ -82,7 +86,11 @@ rules:
 
   - name: phone_us
     type: PHONE
-    pattern: '(?<![\d\-])(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}(?![\d])'
+    # "(510)555-0142" - no separator after the bracketed area code - is how tax
+    # software prints a phone number, and the old pattern required one, so every
+    # phone on a software-prepared return was missed. A bare 3-digit area code
+    # still needs its separator, or any 10-digit run would match.
+    pattern: '(?<![\d\-])(?:\+?1[\s.\-]?)?(?:\(\d{3}\)[\s.\-]?|\d{3}[\s.\-])\d{3}[\s.\-]\d{4}(?![\d])'
     confidence: 0.9
     money_guard: true
 
@@ -141,13 +149,20 @@ rules:
     confidence: 0.55
     context_any: [zip, postal, address, city, state]
     money_guard: true
+    # Owner (0.42.0): five digits are not automatically a ZIP code. Without
+    # address context the shape alone is held for review, never applied.
+    review_unless_context: true
 
   - name: city_state_zip
     type: ADDRESS
     # The comma is now OPTIONAL. Many real mailing blocks - IRS notices
     # among them - condense "CINCINNATI OH 45280-2502" with no comma at all;
     # the original pattern required one and missed every address like it.
-    pattern: '\b[A-Z][A-Za-z.\- ]{1,28},?\s+(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\.?(?:\s+\d{5}(?:-\d{4})?)?\b'
+    # Without a comma the ZIP is REQUIRED. "D Employer ID" and "Schedule CA" -
+    # a word followed by a code that happens to be a state (ID = Idaho) - matched
+    # the comma-optional pattern and were redacted as addresses on real returns.
+    # "CINCINNATI OH 45280-2502" (no comma, with ZIP) still matches.
+    pattern: '\b[A-Z][A-Za-z.\- ]{1,28}(?:,\s*(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\.?(?:\s+\d{5}(?:-\d{4})?)?|\s+(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\.?\s+\d{5}(?:-\d{4})?)\b'
     confidence: 0.85
     # State codes must stay ACTUAL capitals. Half of them are common English
     # words (OR, IN, HI, ME, OK...) - case-insensitive here turned "you, or
@@ -305,7 +320,10 @@ labels:
     expects: [ITIN]
   - pattern: '(tin|taxpayer (identification|id)( number)?|tax id( number)?)'
     expects: [TIN]
-  - pattern: '((business|company|entity|trade|dba|doing business as|legal|firm|employer|payer|payee|partnership|corporation|llc) name)'
+  # The possessive is how forms print it ("Firm's name", "Employer's name"); without
+  # it the generic "...name" PERSON rule claimed the label and a firm's name got a
+  # person's pseudonym (0.41.0).
+  - pattern: '((business|company|entity|trade|dba|doing business as|legal|firm|employer|payer|payee|partnership|corporation|llc)([''’]s)? name)'
     expects: [ORG_PRIVATE]
   - pattern: '(name of (business|company|entity|employer|partnership|corporation|firm))'
     expects: [ORG_PRIVATE]
