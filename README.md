@@ -14,6 +14,12 @@ tool or an outside vendor.
 
 ## Status
 
+**0.41.0**: strict PII-only - only confirmed PII is pseudonymized automatically. A model or
+pattern guess is applied only when a field label, a table column header or a label-confirmed person
+backs it up; anything else is listed for review and left readable. Text this app already replaced
+(in its replacement red) is never re-replaced. Organization and employer names are kept unless you
+choose to replace them. `python -m benchmark.run_fp_benchmark` measures false positives.
+
 **0.40.0**: one person, one synthetic identity. Name roles (given/surname) are learned
 from labels and full names before any pseudonym is generated; lone first names and
 surnames are replaced consistently when their context confirms them and held for review

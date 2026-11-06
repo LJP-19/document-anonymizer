@@ -31,7 +31,9 @@ H2 = ParagraphStyle("h2", parent=STYLES["Heading2"], fontSize=12, spaceBefore=10
 
 
 def _table(rows, widths=None, header=True):
-    data = [[Paragraph(str(c), SMALL) for c in r] for r in rows]
+    from xml.sax.saxutils import escape
+
+    data = [[Paragraph(escape(str(c)), SMALL) for c in r] for r in rows]
     t = Table(data, colWidths=widths, repeatRows=1 if header else 0)
     style = [
         ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
@@ -77,7 +79,7 @@ def build_pdf(results: list, metrics: dict, out_pdf: Path) -> None:
         "it; NOT RUN = processing did not complete. These are QA outputs for inspection, not approved "
         "production documents.", SMALL))
 
-    s.append(Paragraph("Before / after accuracy", H2))
+    s.append(Paragraph(metrics.get("results_heading", "Before / after accuracy"), H2))
     for block in metrics.get("comparisons", []):
         s.append(Paragraph(block["title"], BODY))
         cols = block.get("columns") or ["Metric", "Original (v0.38.2)", "Improved", "Change"]

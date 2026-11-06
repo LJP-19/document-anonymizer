@@ -7,8 +7,28 @@ honest state of what is and is not done.
 
 ## Current version
 
-**0.40.0** - one synthetic identity per person, strict PII-only defaults, red baseline
-replacement, pseudonymized filenames (below). 0.39.0 - real-document accuracy audit.
+**0.41.0** - strict PII-only: only confirmed PII is pseudonymized automatically (below).
+0.40.0 - one synthetic identity per person; 0.39.0 - real-document accuracy audit.
+
+## This pass (0.41.0): false-positive elimination - strict PII-only
+
+Strict scoring (inherited red text from earlier versions excluded and counted separately), same
+three returns, written files:
+
+| Measure | v0.38.2 | 0.39.0 | 0.40.0 | 0.41.0 |
+|---|---:|---:|---:|---:|
+| Precision on genuine content | 0.099 | 0.585 | 0.713 | 0.979 |
+| Recall | 0.650 | 0.887 | 0.889 | 0.844 |
+| Non-PII words wrongly changed | 2873 | 306 | 174 | 9 (all ambiguous, 0 form text) |
+| Inherited words re-pseudonymized (on form elements) | 465 | 358 | 354 | 0 |
+| FP benchmark: wrongly changed / non-PII words | - | - | 12 / 444 | 0 / 444 |
+
+Root causes: re-pseudonymized inherited red text; unconfirmed proposals applied; subjects from
+model guesses; shape-only nine-digit "SSN"; possessive org labels typed PERSON; lone all-caps codes
+as names; same-row values never bound. 41 items are now held for review (recall trade-off).
+Open: 5 applied-but-ambiguous items (two "as of" dates typed DOB, three nine-digit numbers beside a
+name); inherited artifacts left as in the input (original wording not restorable without a template).
+
 
 ## This pass (0.40.0): identity-consistent pseudonymization, strict PII-only defaults
 

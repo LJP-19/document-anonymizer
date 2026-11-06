@@ -2548,3 +2548,28 @@ Tests: `tests/test_pseudonymization_identity.py` (owner's acceptance tests A-J).
   (`engine._drop_numberless_model_streets`). en_core_web_trf tags some unlabelled
   names beside an address as STREET; dropping them failed test_unicode_names on the
   CI model while the dev model passed - run the suite on trf before claiming green.
+
+## 0.41.0: strict PII-only - ONLY CONFIRMED PII IS PSEUDONYMIZED AUTOMATICALLY (owner's release gate)
+
+Tests: `tests/test_false_positive_regressions.py`; benchmark: `python -m benchmark.run_fp_benchmark`
+(must report 0 wrongly changed words). Do not trade this away for recall.
+
+- **Text in the replacement red is a hard protected region** (`protection.PRIOR_REPLACEMENT`,
+  `prior_replacement_runs`). An earlier run already replaced it; on real inputs earlier versions had
+  put pseudonyms where FORM WORDING was, and re-pseudonymizing them was 1,433 of 1,747 replacements.
+  A proposal touching it is rejected before subjects are identified (`drop_prior_replacements`) and
+  at the gate - so a synthetic name never enters the registry. A rule match is clipped like any
+  other protected text. Manual additions still override.
+- **Corroboration gate** (`protection.hold_unconfirmed_proposals`, main pass AND second pass): a
+  model/heuristic/pattern proposal is applied only if label-bound, typed by a table column header,
+  a name control, propagation of a label-confirmed entity, or made only of a label-confirmed
+  person's name words. Otherwise `ambiguous` -> held for review, NEVER deleted.
+- **Subjects come only from labels or deterministic rules** (`identify_subjects`); a confident model
+  guess no longer qualifies, and held candidates never seed propagation.
+- `review_unless_context` (rule YAML): a shape-only match (bare nine digits) is held.
+- Organization/employer names are held (`DecisionManager.register`), never replaced unless a person
+  decides. "Firm's name"/"Employer's name" are ORG labels (possessive allowed).
+- Same-row binding (`groups._value_lines_for` Case C) requires a STYLE CHANGE between label and
+  value, a non-label value, >=2 alphanumerics and no symbol-font glyph - each guard is a real FP.
+- Strict scoring for real inputs that earlier versions processed: inherited red text is EXCLUDED
+  and counted separately; counting it as PII hid exactly the damage the owner saw.
