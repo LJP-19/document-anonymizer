@@ -322,3 +322,31 @@ def test_J_descriptive_words_and_numbers_survive(tmp_path):
     name = s.safe_output_name()
     assert name.endswith("-Final 1040 v2.pdf") and name.startswith("2025_")
     assert "Quell" not in name
+
+
+def test_D_a_dependents_column_line_does_not_make_a_surname_a_given_name():
+    """A "(1) First name" column can bind the whole "First M Last" line. Seeding
+    every word of it as a given name made the surname a first-name pseudonym
+    wherever it appeared alone (seen on a real return's filename). Surname
+    labels are seeded first, and only the FIRST word under a given-name label."""
+    from types import SimpleNamespace as NS
+
+    from app.detection.types import PiiType
+    from app.pseudonymization.names import NameRegistry
+    from app.transform.plan import _seed_name_roles
+
+    def cand(value, gid):
+        return NS(pii_type=PiiType.PERSON, normalized=value, group_id=gid)
+
+    groups = [NS(group_id="g1", label=NS(text="(1) First name")),
+              NS(group_id="g2", label=NS(text="Last name"))]
+    # The column line comes FIRST, as it did on the real return.
+    det = NS(groups=groups, candidates=[cand("Oska Rue Venn", "g1"), cand("Venn", "g2")])
+    reg = NameRegistry(scope="t")
+    _seed_name_roles(reg, det)
+    expected = NameRegistry(scope="t")
+    expected.seed_role("Venn", surname=True)
+    given = NameRegistry(scope="t")
+    given.seed_role("Venn", surname=False)
+    assert expected.known("Venn") != given.known("Venn")   # the test can tell them apart
+    assert reg.known("Venn") == expected.known("Venn"), "the surname must get a surname pseudonym"

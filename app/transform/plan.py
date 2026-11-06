@@ -113,17 +113,25 @@ def _seed_name_roles(names, detection) -> None:
     surname_re = re.compile(r"\b(last|sur|family)\s*name\b|\bsurname\b", re.I)
     by_group = {g.group_id: g for g in getattr(detection, "groups", []) or []}
     persons = [c for c in detection.candidates if c.pii_type is PiiType.PERSON]
+    labelled = []
     for c in persons:
         group = by_group.get(c.group_id) if c.group_id else None
         if group is None:
             continue
-        label = group.label.text
         tokens = [t for t in c.normalized.split() if t.strip(".,").isalpha() and len(t.strip(".,")) > 1]
-        if surname_re.search(label) and len(tokens) == 1:
+        if tokens:
+            labelled.append((group.label.text, tokens))
+    # Surname labels first: a "first name" column on a dependents table often
+    # binds the whole "First M Last" line, and its trailing word is a surname.
+    # Seeding that line's words as given names first turned a surname into a
+    # first-name pseudonym everywhere it appeared alone. Under a given-name
+    # label only the FIRST word is taken as a given name.
+    for label, tokens in labelled:
+        if surname_re.search(label) and not given_re.search(label) and len(tokens) == 1:
             names.seed_role(tokens[0], surname=True)
-        elif given_re.search(label) and tokens:
-            for t in tokens:
-                names.seed_role(t, surname=False)
+    for label, tokens in labelled:
+        if given_re.search(label) and not surname_re.search(label):
+            names.seed_role(tokens[0], surname=False)
     multi = sorted({c.normalized for c in persons if len(c.normalized.split()) >= 2},
                    key=lambda v: (-len(v.split()), v))
     for value in multi:
