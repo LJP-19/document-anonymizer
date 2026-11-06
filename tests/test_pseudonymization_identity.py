@@ -352,10 +352,10 @@ def test_D_a_dependents_column_line_does_not_make_a_surname_a_given_name():
     assert reg.known("Venn") == expected.known("Venn"), "the surname must get a surname pseudonym"
 
 
-@pytest.mark.parametrize("value", ["4049 CARIBBEAN CMN", "12 Oak St", "98765 Long Road", "7 Elm Ct"])
+@pytest.mark.parametrize("value", ["4817 HARBORVIEW CMN", "12 Oak St", "98765 Long Road", "7 Elm Ct"])
 def test_F_a_street_keeps_its_house_number_shape(value):
     """A 4-digit house number became a 5-digit one with a leading zero on a real
-    return ("4049 ..." -> "08148 ..."). Same digit count, no leading zero."""
+    return ("4817 ..." -> "08148 ..."). Same digit count, no leading zero."""
     from app.detection.types import PiiType
     from app.pseudonymization.generator import generate
 

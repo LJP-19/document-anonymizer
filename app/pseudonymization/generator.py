@@ -101,7 +101,7 @@ NAME_SUFFIX = re.compile(r"\b(jr|sr|ii|iii|iv|md|cpa|esq)\b\.?$", re.I)
 
 
 def _match_house_number(out: str, original: str, fake) -> str:
-    """Keep the original house number's digit count: "4049 MAIN ST" must not
+    """Keep the original house number's digit count: "4817 MAIN ST" must not
     become "08148 ...". A 4-digit number gets a 4-digit number, never a leading
     zero; an original with no leading number is left as generated."""
     m_orig = re.match(r"^\s*(\d+)\b", original or "")

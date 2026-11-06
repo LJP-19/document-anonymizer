@@ -2543,7 +2543,7 @@ Tests: `tests/test_pseudonymization_identity.py` (owner's acceptance tests A-J).
   "If joint return, spouse's first name and middle initial" had no label, so the
   spouse's first name rested on a model guess and the production model missed it.
 - **House numbers keep their digit count** (`generator._match_house_number`): no
-  "4049" -> "08148".
+  "4817" -> "08148".
 - **A name-shaped model "street" is retyped, not dropped**
   (`engine._drop_numberless_model_streets`). en_core_web_trf tags some unlabelled
   names beside an address as STREET; dropping them failed test_unicode_names on the
