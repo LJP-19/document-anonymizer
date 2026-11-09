@@ -1,3 +1,15 @@
+### What changed in 0.42.1
+
+**Fixes a crash on macOS during the first-launch model download.** Choosing an AI
+model larger than 2 GB (the 7B option, recommended on Macs with 16 GB of memory or
+more) crashed the app ("DocumentAnonymizer quit unexpectedly", thread
+`_DownloadWorker`). The download progress was passed between threads as a 32-bit
+number, which a byte count above 2 GB overflows. Progress now carries the exact
+byte count. The app's own version also shows in macOS dialogs (it read 0.0.0).
+
+If the crash interrupted a download, choose the same model again: the part that
+already arrived is kept and the download resumes.
+
 ### What changed in 0.42.0
 
 **Only confirmed PII is changed without you.** One authorization policy decides, for

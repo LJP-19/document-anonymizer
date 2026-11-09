@@ -466,3 +466,101 @@ def test_a_right_sized_but_corrupt_model_file_makes_the_auditor_unavailable_not_
     assert auditor.available is False
     with pytest.raises(AuditorUnavailable):
         auditor.load()
+
+
+def test_download_completion_is_handled_on_the_gui_thread_never_the_worker(
+    tmp_path, monkeypatch, qapp
+):
+    """Real macOS crash (v0.42.0): "Crashed Thread: _DownloadWorker ... abort()".
+    `succeeded` was connected to a LAMBDA, which PySide6 runs in the emitting
+    (download) thread, so accept()/setText() touched the window off the GUI
+    thread and AppKit aborted the process. Every dialog reaction to the worker
+    must run on the GUI thread."""
+    import threading
+
+    from PySide6.QtCore import QCoreApplication
+
+    from app.llm.catalog import CATALOG
+    from app.ui import model_picker
+
+    gui = threading.get_ident()
+    seen: dict[str, int] = {}
+    choice = CATALOG[0]
+
+    def fake_download(c, on_progress=None, cancel=None):
+        if on_progress:
+            on_progress(c.size_bytes, c.size_bytes)
+        from app.llm.downloader import model_path
+
+        path = model_path(c)
+        path.touch()
+        import os
+
+        os.truncate(path, c.size_bytes)
+        return path
+
+    dialog = model_picker.ModelPickerDialog()
+    dialog._buttons[choice.id].setChecked(True)
+    orig_succeeded, orig_progress = dialog._on_succeeded, dialog._on_progress
+    monkeypatch.setattr(
+        dialog, "_on_succeeded",
+        lambda c: (seen.__setitem__("succeeded", threading.get_ident()), orig_succeeded(c)),
+    )
+    monkeypatch.setattr(dialog, "accept", lambda: seen.__setitem__("accept", threading.get_ident()))
+
+    with patch("app.ui.model_picker.download", side_effect=fake_download):
+        dialog._on_download_clicked()
+        deadline = time.time() + 5
+        while "accept" not in seen and time.time() < deadline:
+            QCoreApplication.processEvents()
+            time.sleep(0.01)
+        if dialog._worker is not None:
+            dialog._worker.wait(5000)
+
+    assert seen.get("succeeded") == gui, "download success handled off the GUI thread"
+    assert seen.get("accept") == gui, "dialog accepted off the GUI thread"
+
+
+def test_model_picker_connects_no_lambda_to_worker_signals():
+    """Static guard for the same crash: a lambda connected to a QThread's
+    signal runs in that thread."""
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "app" / "ui" / "model_picker.py").read_text()
+    assert not re.search(r"_worker\.\w+\.connect\(\s*lambda", src)
+
+
+def test_progress_signal_carries_byte_counts_above_2gib_exactly(qapp):
+    """The 7B tier is 4.68 GB. With Signal(int, int) PySide6 truncated the
+    count and left an OverflowError set in the download thread on every
+    emit (v0.42.0 macOS crash in thread _DownloadWorker)."""
+    from PySide6.QtCore import QCoreApplication
+
+    from app.llm.catalog import CATALOG
+    from app.ui import model_picker
+
+    big = max(CATALOG, key=lambda c: c.size_bytes)
+    assert big.size_bytes > 2**31  # the case that broke
+    got: list[tuple[int, int]] = []
+
+    class Sink(model_picker.QWidget):
+        def take(self, w, t):
+            got.append((w, t))
+
+    sink = Sink()
+
+    def fake_download(c, on_progress=None, cancel=None):
+        on_progress(c.size_bytes - 1, c.size_bytes)
+        raise model_picker.DownloadError("stop here")
+
+    worker = model_picker._DownloadWorker(big)
+    worker.progress.connect(sink.take)
+    with patch("app.ui.model_picker.download", side_effect=fake_download):
+        worker.start()
+        worker.wait(5000)
+    deadline = time.time() + 5
+    while not got and time.time() < deadline:
+        QCoreApplication.processEvents()
+        time.sleep(0.01)
+    assert got == [(big.size_bytes - 1, big.size_bytes)]

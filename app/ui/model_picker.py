@@ -43,7 +43,12 @@ class _DownloadWorker(QThread):
     exact segfault classes that comment describes avoiding.
     """
 
-    progress = Signal(int, int)
+    # object, NOT int: a Qt int is 32-bit signed, and byte counts for any
+    # model over 2 GiB (the 7B tier is 4.68 GB) overflow it. PySide6 then
+    # truncates the value AND leaves a Python OverflowError set inside the
+    # download thread on every emit - an interpreter state that can end in
+    # a fatal error / abort() (macOS crash in thread _DownloadWorker, v0.42.0).
+    progress = Signal(object, object)
     succeeded = Signal(object)
     failed = Signal(str)
 
@@ -85,6 +90,7 @@ class ModelPickerDialog(QDialog):
         self.setWindowTitle("Choose a local AI model")
         self.setMinimumWidth(560)
         self._worker: Optional[_DownloadWorker] = None
+        self._pending_choice: Optional[LlmChoice] = None
         self._selected_path = None
 
         layout = QVBoxLayout(self)
@@ -172,9 +178,19 @@ class ModelPickerDialog(QDialog):
             return
         self._set_busy(True)
         self._status.setText(f"Downloading {choice.label}...")
+        self._pending_choice = choice
         self._worker = _DownloadWorker(choice, self)
+        # Every connection here is to a BOUND METHOD of this dialog, never a
+        # lambda. PySide6 runs a plain lambda in the thread that EMITS the
+        # signal - the download thread - so the old
+        # `succeeded.connect(lambda ...: self._on_succeeded(c))` called
+        # accept()/setText() on the window from a background thread. macOS
+        # AppKit aborts the process for that (crash report: "Crashed Thread:
+        # _DownloadWorker ... abort() called"), the moment the download
+        # finished. A bound method of a QObject living in the GUI thread is
+        # delivered as a queued call on the GUI thread.
         self._worker.progress.connect(self._on_progress)
-        self._worker.succeeded.connect(lambda path, c=choice: self._on_succeeded(c))
+        self._worker.succeeded.connect(self._on_worker_succeeded)
         self._worker.failed.connect(self._on_failed)
         self._worker.start()
 
@@ -185,6 +201,11 @@ class ModelPickerDialog(QDialog):
         written_gb = written / 1e9
         total_gb = total / 1e9
         self._status.setText(f"Downloading... {written_gb:.2f} / {total_gb:.2f} GB")
+
+    def _on_worker_succeeded(self, _path: object) -> None:
+        choice = self._pending_choice
+        if choice is not None:
+            self._on_succeeded(choice)
 
     def _on_succeeded(self, choice: LlmChoice) -> None:
         set_selected(choice)

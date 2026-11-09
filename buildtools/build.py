@@ -196,7 +196,26 @@ def build(clean: bool = True) -> Path:
 
     print("running:", " ".join(cmd), flush=True)
     subprocess.run(cmd, check=True, cwd=ROOT)
+    if sys.platform == "darwin":
+        _stamp_bundle_version(dist / f"{BUNDLE_NAME}.app")
     return dist
+
+
+def _stamp_bundle_version(app: Path) -> None:
+    """PyInstaller writes no version into Info.plist, so macOS reported the
+    app as "Version 0.0.0 (???)" in its crash dialog. Runs before signing."""
+    import plistlib
+
+    plist = app / "Contents" / "Info.plist"
+    if not plist.exists():
+        return
+    with open(plist, "rb") as fh:
+        data = plistlib.load(fh)
+    data["CFBundleShortVersionString"] = __version__
+    data["CFBundleVersion"] = __version__
+    data["NSHighResolutionCapable"] = True
+    with open(plist, "wb") as fh:
+        plistlib.dump(data, fh)
 
 
 def make_dmg(dist: Path) -> Path:

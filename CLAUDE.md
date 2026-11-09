@@ -2623,3 +2623,16 @@ and the copied app self-tested) -> release job (needs all; checksums verified,
   branch to appear in the UI; a tag push runs the workflow file of the tagged commit.
 - Icons are generated in `build.py` via `make_icon.py` (PyMuPDF rasterizes the SVG,
   Pillow writes .ico/.icns); generated files are git-ignored.
+
+## A Qt signal carrying byte counts must be Signal(object), never Signal(int) (0.42.1)
+
+A Qt `int` is 32-bit signed. `_DownloadWorker.progress` was `Signal(int, int)`;
+the 7B model is 4.68 GB, so every emit overflowed. PySide6 does NOT raise: it
+truncates the value and leaves an OverflowError SET in the emitting thread
+(reproduced on PySide6 6.9.1), an interpreter state that can end in a fatal
+error. Real report: macOS crash, "Crashed Thread: _DownloadWorker ... abort()
+called". The CI `--self-test` never runs the picker, so it could not catch it;
+`tests/test_llm_picker.py` now emits a >2 GiB count through the real worker
+(mutation-checked). Not confirmed against the user's full backtrace - the
+overflow is a reproduced defect on the crashing thread's only work, not proof
+it was the sole cause. Info.plist now carries the version (`build._stamp_bundle_version`).
