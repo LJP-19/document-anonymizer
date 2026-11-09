@@ -3207,3 +3207,102 @@ def test_a_lone_surname_in_prose_waits_but_a_titled_one_is_the_person():
 
     assert assess(in_prose("Mr. Okonkwo-Brandt recharacterized it.", "Okonkwo-Brandt"), words).eligible
     assert not assess(in_prose("Smith & Wesson makes firearms.", "Smith"), words).eligible
+
+
+# --- 0.42.6: lone names everywhere; W-2 box d control number --------------------------
+
+def test_a_lone_surname_and_first_name_in_prose_are_replaced():
+    """Owner's rule (0.42.6): once a label confirms the person, their surname or
+    first name alone is that person anywhere in the document, prose included."""
+    from tests.helpers_text import redacted
+
+    got = {t for t, _k in redacted(
+        "Your first name: Ines\nLast name: Okonkwo\n"
+        "Dear Ines, your refund is ready.\nThe Okonkwo family notes are attached.\n"
+        "Quell agreed.")}
+    assert {"Ines", "Okonkwo"} <= got
+    assert sum(1 for t, _k in redacted("Your first name: Ines\nLast name: Okonkwo\n"
+                                       "Dear Ines, your refund is ready.") if t == "Ines") == 2
+
+
+def test_a_surname_joined_to_another_name_is_not_the_person():
+    """'Smith & Wesson' / 'Smith and Wesson' / 'Smith Holdings LLC' name something
+    else; the lone-name rule must not fire there."""
+    from app.decisions.authorization import _joined_to_another_entity
+    from app.detection.types import Candidate, PiiType, Source
+    from tests.test_authorization import _line
+
+    def at(text, name):
+        ln = _line(text); st = text.index(name)
+        return Candidate(pii_type=PiiType.PERSON, text=name, page_no=0, rect=ln.rect_for(st, st + len(name)),
+                         line=ln, start=st, end=st + len(name), confidence=0.5, source=Source.COVERAGE)
+
+    words = {"john", "smith", "ann"}
+    assert _joined_to_another_entity(at("Smith & Wesson makes firearms.", "Smith"), words)
+    assert _joined_to_another_entity(at("Bought from Smith and Wesson.", "Smith"), words)
+    assert _joined_to_another_entity(at("Paid Smith Holdings LLC.", "Smith"), words)
+    assert _joined_to_another_entity(at("Paid Smith Inc. in full.", "Smith"), words)
+    assert _joined_to_another_entity(at("Wesson & Smith LLP", "Smith"), words)
+    # the person's own household is not "another entity"
+    assert not _joined_to_another_entity(at("Ann & Smith signed.", "Smith"), words)
+    assert not _joined_to_another_entity(at("Smith filed late, as agreed.", "Smith"), words)
+
+
+def _box_pdf(path, extra_caption=False, value_text="A7731-0042"):
+    import pymupdf
+
+    d = pymupdf.open(); p = d.new_page(width=612, height=300)
+    p.insert_text((42, 165), "d  Control number", fontname="hebo", fontsize=7)
+    if extra_caption:
+        p.insert_text((165, 165), "Other code", fontname="hebo", fontsize=7)
+    p.insert_text((163, 177), value_text, fontname="cour", fontsize=8)   # filled-in typeface
+    p.insert_text((42, 189), "e  Employee's first name and initial", fontname="hebo", fontsize=7)
+    d.save(str(path))
+
+
+def test_a_value_centred_in_a_wide_box_binds_to_its_caption(tmp_path):
+    from app.session import AnonymizationSession
+
+    _box_pdf(tmp_path / "box.pdf")
+    s = AnonymizationSession(source_path=str(tmp_path / "box.pdf")); s.analyse()
+    hits = [c for c in s.candidates if c.text == "A7731-0042"]
+    assert hits and all(s.decisions.is_actionable(c) for c in hits)
+
+
+def test_a_centred_value_under_another_caption_is_not_stolen(tmp_path):
+    """The value sits under a second caption on the same row: it is that caption's,
+    not the control number's."""
+    from app.session import AnonymizationSession
+
+    _box_pdf(tmp_path / "box2.pdf", extra_caption=True)
+    s = AnonymizationSession(source_path=str(tmp_path / "box2.pdf")); s.analyse()
+    groups = [g for g in s.detection.groups if "Control number" in g.label.text]
+    assert not any("A7731-0042" in ln.text for g in groups for ln in g.value_lines)
+
+
+def test_a_carried_over_name_typed_company_is_the_person():
+    """Forms benchmark (return_b): GLiNER typed the spouse's first name 'employer
+    name' on one page; propagation carried that type into a later sentence ("The
+    account owner, Ines, confirmed ..."), where it was held as 'detectors disagree'.
+    A confirmed person's name word is that person, whatever a model typed it."""
+    from app.detection.engine import _retype_known_name_components
+    from app.detection.types import Candidate, Evidence, PiiType, Source
+    from tests.test_authorization import _line
+
+    text = "The account owner, Ines, confirmed the transfer."
+    ln = _line(text); st = text.index("Ines")
+    person = Candidate(pii_type=PiiType.PERSON, text="Ines Okonkwo-Brandt", page_no=0, rect=(0, 0, 1, 1),
+                       line=_line("Ines Okonkwo-Brandt"), start=0, end=19, confidence=0.9, source=Source.GROUP)
+    carried = Candidate(pii_type=PiiType.ORG_PRIVATE, text="Ines", page_no=1, rect=ln.rect_for(st, st + 4),
+                        line=ln, start=st, end=st + 4, confidence=0.7, source=Source.COVERAGE,
+                        evidence=[Evidence(Source.COVERAGE, "same value as an entity named in a subject field", 0.7),
+                                  Evidence(Source.NER, "spaCy PERSON", 0.6)],
+                        needs_review=True, review_reason="detectors disagree: ORG_PRIVATE vs PERSON")
+    out = _retype_known_name_components([person, carried])
+    assert out[1].pii_type is PiiType.PERSON and not out[1].needs_review
+
+    # ...but a company a LABEL confirmed keeps its type.
+    labelled = Candidate(pii_type=PiiType.ORG_PRIVATE, text="Ines", page_no=1, rect=carried.rect, line=ln,
+                         start=st, end=st + 4, confidence=0.9, source=Source.COVERAGE,
+                         evidence=[Evidence(Source.GROUP, "value of the labelled field 'Employer's name'", 0.9)])
+    assert _retype_known_name_components([person, labelled])[1].pii_type is PiiType.ORG_PRIVATE

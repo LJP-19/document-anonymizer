@@ -282,15 +282,41 @@ def _made_of_confirmed_address(c: Candidate, confirmed_words: set) -> bool:
 
 _TITLE_BEFORE = re.compile(r"(?:mr|mrs|ms|miss|mx|dr|prof)\.?\s+$", re.I)
 
+#: "Smith & Wesson", "Smith and Wesson", "Smith Barney Inc." - a confirmed surname
+#: joined to ANOTHER capitalised word that is not one of the person's own names is
+#: the name of something else (usually a business), not the person.
+_JOINED_AFTER = re.compile(r"^\s*(?:&|\+|and)\s+([A-Z][\w'\-]*)")
+_JOINED_BEFORE = re.compile(r"([A-Z][\w'\-]*)\s*(?:&|\+|and)\s*$")
+_ORG_AFTER = re.compile(r"^[\s,]*(?:inc|llc|l\.l\.c|llp|corp|corporation|co|company|ltd|plc|"
+                        r"group|holdings|partners|associates|foundation|trust|bank|"
+                        r"manufacturing|industries|enterprises)\b\.?", re.I)
 
-def _unmistakably_the_person(c: Candidate) -> bool:
-    """A full name (two or more name words), or a surname right after a title
-    ("Mr. Okonkwo-Brandt"). A lone surname in prose can be something else ("Smith &
-    Wesson makes firearms") and stays a person's decision."""
+
+def _joined_to_another_entity(c: Candidate, confirmed_words: set) -> bool:
+    if c.line is None:
+        return False
+    after = c.line.text[c.end:]
+    before = c.line.text[: c.start]
+    if _ORG_AFTER.match(after):
+        return True
+    for m in (_JOINED_AFTER.match(after), _JOINED_BEFORE.search(before)):
+        if m and m.group(1).lower() not in confirmed_words:
+            return True
+    return False
+
+
+def _unmistakably_the_person(c: Candidate, confirmed_words: Optional[set] = None) -> bool:
+    """A full name (two or more name words), a surname right after a title ("Mr.
+    Okonkwo-Brandt"), or - owner's rule, 0.42.6 - a lone first name or surname of
+    the confirmed person anywhere in the document ("Quell agreed", "Dear Ines,"),
+    unless it is joined to another name ("Smith & Wesson makes firearms") or
+    followed by a company suffix: that is the name of something else."""
     if len(_name_words(c.text)) >= 2:
         return True
     before = c.line.text[: c.start] if c.line is not None else ""
-    return bool(_TITLE_BEFORE.search(before))
+    if _TITLE_BEFORE.search(before):
+        return True
+    return not _joined_to_another_entity(c, confirmed_words or set())
 
 
 def _made_of_confirmed_names(c: Candidate, confirmed_words: set) -> bool:
@@ -340,7 +366,7 @@ def assess(c: Candidate, confirmed_words: Optional[set] = None) -> Assessment:
         detector_doubt_only = bool(parts) and all(
             any(p.startswith(d) for d in LABEL_RESOLVABLE_DOUBTS) for p in parts)
         settled = (detector_doubt_only and confirmed_words and _made_of_confirmed_names(c, confirmed_words)
-                   and _unmistakably_the_person(c))
+                   and _unmistakably_the_person(c, confirmed_words))
         # An IRS name control (first 4 letters of the surname on a scanline) is
         # only ever produced from a subject a label confirmed; its flag says where
         # it came from, it is not doubt. Left readable, "QUIL" beside a replaced
@@ -359,6 +385,10 @@ def assess(c: Candidate, confirmed_words: Optional[set] = None) -> Assessment:
         # firearms") is exactly what the caution is for, and stays held.
         own_field = getattr(c, "label_confirmed", False) or any(
             e.detail.startswith("value of the labelled field") for e in c.evidence)
+        # Owner's rule (0.42.6): a lone first name or surname of the confirmed
+        # person is that person everywhere in the document - in prose too -
+        # unless it is joined to another name or a company suffix.
+        own_field = own_field or (short_ok and _unmistakably_the_person(c, confirmed_words))
         allowed = SOFT_PROTECTION_DOUBTS + ((SHORT_NAME_DOUBT,) if short_ok and own_field else ())
         if (not settled and c.source is Source.COVERAGE and parts and short_ok
                 and any(e.detail.startswith("name control (") for e in c.evidence)

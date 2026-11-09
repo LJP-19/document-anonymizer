@@ -2729,3 +2729,29 @@ binds only the first column), PTIN typed MRN and held, ZIP held as PROBABLE.
 - Verifier baseline (`_OutsideCounts`) counts with the check's own whole-token rule and is
   ALWAYS truthy - an empty dict subclass made `outside or {}` drop the baseline silently.
 - Open: the W-2 control number (centred far from its caption) is not detected.
+
+## 0.42.6: lone names replaced everywhere; W-2 box d (owner's rules)
+
+- **A label-confirmed person's lone first name or surname is that person in prose too**
+  (`authorization._unmistakably_the_person(c, confirmed_words)`): "Dear Ines,", "Quell
+  agreed", "the Okonkwo family". It settles a detector's doubt and the short-name caution
+  wherever it stands. The ONLY exception is `_joined_to_another_entity`: joined by "&",
+  "+" or "and" to a capitalised word that is not one of the person's own names ("Smith &
+  Wesson", "Wesson & Smith LLP"), or followed by a company word ("Smith Holdings LLC").
+  Those stay held; `ambiguous` (an unregistered capitalised word right after, lower case on
+  a mixed-case line) still vetoes as before. Supersedes the 0.42.5 "lone surname in prose
+  waits" rule.
+- **A value centred in a wide box binds to its short caption** (`groups._centred_in_box`):
+  W-2 "d Control number" ends at x=99, its value starts at x=163. Starts within
+  `BOX_CENTRE_MAX_OFFSET` (80 pt) right of the caption, another style AND font family than
+  the caption (`_same_template` - template text in the caption's family is form text), alone
+  on its row inside the column, and no other caption on the caption's row above it (that one
+  owns it). Checked at the column filter too: the "another column" skip ran first and hid it.
+- `^d\s+control (number|no|#)` (W-2 box d, box letter REQUIRED) is an EMPLOYEE_ID label.
+  A bare "Control number" above an e-file code line is software output, not PII - the
+  unanchored pattern made 7 false positives in the FP benchmark. Never drop the anchor.
+- `_retype_known_name_components` also retypes a lone confirmed name word that PROPAGATION
+  carried over with a model's wrong type (COVERAGE, no label evidence): GLiNER called the
+  spouse's first name "employer name" once and every later "Ines" became an ORG, held as
+  "detectors disagree" (forms benchmark return_b, the last missed word). A label-confirmed
+  company is never retyped.

@@ -430,7 +430,8 @@ def _value_lines_for(
             # SSN, state and ZIP box. Another column's line is skipped, not fatal.
             cx0, cx1 = candidate_line.bbox[0], candidate_line.bbox[2]
             overlaps_label = min(cx1, label_x1) - max(cx0, label_x0) > 1.0
-            if not overlaps_label and abs(cx0 - anchor_left) > LEFT_EDGE_TOLERANCE:
+            boxed = not stacked and _centred_in_box(candidate_line, line, label_x0, label_x1, siblings)
+            if not overlaps_label and abs(cx0 - anchor_left) > LEFT_EDGE_TOLERANCE and not boxed:
                 if strict:
                     break
                 continue
@@ -456,7 +457,7 @@ def _value_lines_for(
                 # reaching in from the left. Only the first value line qualifies.
                 not stacked and overlaps_label and cx0 >= anchor_left - 0.5
                 and cx0 <= label_x1 + LEFT_EDGE_TOLERANCE
-            ):
+            ) and not boxed:
                 break
             if _is_pure_financial(candidate_line.text):
                 break
@@ -476,6 +477,41 @@ def _value_lines_for(
             anchor_left = candidate_line.bbox[0] if len(stacked) == 1 else anchor_left
 
     return stacked, inline
+
+
+#: How far right of a short caption a box's value may be centred (W-2 box d:
+#: "Control number" ends at x=99, its value starts at x=163 in a 270 pt wide box).
+BOX_CENTRE_MAX_OFFSET = 80.0
+
+
+def _centred_in_box(value: Line, caption_line: Line, label_x0: float, label_x1: float,
+                    siblings: list[Line]) -> bool:
+    """A filled value centred in a WIDE box whose caption is short and sits at the
+    box's left edge: right of the caption, alone on its row inside the column, set
+    in another style than the caption, and with no other caption above it on the
+    caption's row (that would be the value's own caption)."""
+    from .layout_style import line_style
+
+    vx0, vy0, vx1, vy1 = value.bbox
+    if not (label_x1 - 0.5 <= vx0 <= label_x1 + BOX_CENTRE_MAX_OFFSET):
+        return False
+    if line_style(value) == line_style(caption_line) or _same_template(value, caption_line):
+        return False
+    if sum(ch.isalnum() for ch in value.text) < 2 or _symbol_font(value):
+        return False
+    cy = (caption_line.bbox[1] + caption_line.bbox[3]) / 2
+    vy = (vy0 + vy1) / 2
+    for other in siblings:
+        if other is value or other is caption_line or not other.text.strip():
+            continue
+        ox0, oy0, ox1, oy1 = other.bbox
+        # another caption on the caption's row, above the value: the value is its
+        if oy0 <= cy <= oy1 and label_x1 < ox0 <= vx1:
+            return False
+        # something else on the value's row between the caption's left edge and it
+        if oy0 <= vy <= oy1 and label_x0 - 0.5 <= ox1 <= vx0 + 0.5:
+            return False
+    return True
 
 
 _ADDRESS_SHAPE = re.compile(

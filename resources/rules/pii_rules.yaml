@@ -366,6 +366,13 @@ labels:
     expects: [MEMBER_ID]
   - pattern: '(employee|personnel|payroll|badge) (id|number|no\.?|#)'
     expects: [EMPLOYEE_ID]
+  # W-2 box d: the employer's control number for THIS employee's form - a
+  # record identifier that links the return to the person (owner, 0.42.6).
+  # Anchored to the box letter: a bare "Control number" above an e-file code
+  # line ("573918204 SS EXT 01 ...") is software output printed identically on
+  # different people's returns - not PII (0.41.0, FP benchmark).
+  - pattern: '^d\s+control (number|no\.?|#)'
+    expects: [EMPLOYEE_ID]
   # W-2 box 15 "Employer's state ID number" is the employer's state tax account,
   # not a driver's licence: longer, so it outranks the 'state id' pattern below.
   - pattern: 'employer.?s? state (tax )?id( number| no\.?| #)?'

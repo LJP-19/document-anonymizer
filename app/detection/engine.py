@@ -455,9 +455,22 @@ def _retype_known_name_components(candidates: list) -> list:
     for c in candidates:
         if c.pii_type is PiiType.PERSON and (c.group_id is not None or c.source in (Source.GROUP, Source.COVERAGE)):
             known.update(fold(t.strip(".,")) for t in c.text.split() if len(t.strip(".,")) >= 2)
+    def model_typed(c) -> bool:
+        # A model's guess, or an occurrence CARRIED OVER from one (propagation
+        # copies the type of the entity it repeats: "Ines" typed "employer name"
+        # by GLiNER on one page became an ORG "Ines" in a later sentence, held as
+        # "detectors disagree"). A company a LABEL confirmed is never retyped.
+        if c.group_id is not None or getattr(c, "label_confirmed", False):
+            return False
+        if c.source is Source.NER:
+            return True
+        return c.source is Source.COVERAGE and not any(
+            e.detail.startswith(("value of the labelled field", "value line of labelled group"))
+            for e in c.evidence)
+
     out = []
     for c in candidates:
-        if (c.source is Source.NER and c.group_id is None
+        if (model_typed(c)
                 and c.pii_type in (PiiType.CITY_STATE, PiiType.ORG_PRIVATE, PiiType.STREET)
                 and " " not in c.text.strip() and fold(c.text.strip(".,")) in known):
             from .entities_pass import _component_context_is_ambiguous

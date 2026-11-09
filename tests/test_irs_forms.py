@@ -92,7 +92,8 @@ def test_form_1040_firm_name_is_replaced_and_held_items_stay_readable(f1040):
 
 
 IDENTITY_W2 = ["512-48-7391", "84-3127755", "Marcus T", "Feldman", "1450 Charleston Rd", "Northwind Analytics Inc",
-               "Mountain View, CA 94043", "4817 Larkspur Ridge Dr", "Fremont, CA 94539", "113-4482-9"]
+               "Mountain View, CA 94043", "4817 Larkspur Ridge Dr", "Fremont, CA 94539", "113-4482-9",
+               "A7731-0042"]   # box d control number, centred in its box (0.42.6)
 
 
 def test_w2_every_identity_value_is_replaced(w2):
@@ -136,6 +137,7 @@ def test_joint_return_every_identity_value_is_replaced(joint):
         "Formosa Tax Partners LLC", "Pacific Rim Semiconductor Inc",                  # firm + employer
         "P02468135", "77-4051836", "94-2716635", "348-1176-2",
         "121042882", "7730158294", "(408) 555-0173", "weiting.chen@example.com",
+        "PRS-20419",                                                                  # W-2 box d
     ] if re.search(rf"(?<![\w-]){re.escape(v)}(?![\w-])", text)]   # whole words: "Lin" is in "Line"
     assert not left, left
     assert not s.decisions.awaiting_review(s.candidates)

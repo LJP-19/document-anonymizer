@@ -150,7 +150,8 @@
       "gliner": true,
       "has_detector": true,
       "label_patterns": [
-        "(employee|personnel|payroll|badge) (id|n"
+        "(employee|personnel|payroll|badge) (id|n",
+        "^d\\s+control (number|no\\.?|#)"
       ],
       "presidio": false,
       "regex_rules": [

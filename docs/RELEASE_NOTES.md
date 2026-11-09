@@ -1,3 +1,20 @@
+### What changed in 0.42.6
+
+**A person's first name or surname alone is replaced everywhere.** Once a field label
+confirms the person ("Your first name", "Last name"), the name on its own is replaced
+on every page, in sentences too ("Dear Ines,", "Quell agreed", "the Okonkwo family"),
+with the same pseudonym as everywhere else. The one exception: a surname joined to
+another name or a company word ("Smith & Wesson", "Smith Holdings LLC") names
+something else and waits for your review.
+
+**A first name a model mistook for a company is the person again.** If a model called
+the spouse's first name an "employer name" on one page, that wrong type was carried
+into later sentences and the name waited for review; a label-confirmed name now wins.
+
+**The W-2 control number (box d) is replaced.** Its value is centred in a wide box
+far from its caption, so it was never tied to the caption; it is now, and it keeps its
+format ("A7731-0042" becomes another letter-digit code of the same shape).
+
 ### What changed in 0.42.5
 
 **Amounts are never changed automatically - enforced at the last step.** Whatever any
