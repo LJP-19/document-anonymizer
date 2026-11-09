@@ -66,6 +66,39 @@ def _veto(candidates: list, negatives: list, groups: Optional[list] = None) -> l
     return kept
 
 
+def _type_organisation_group_values(candidates: list, groups: list) -> list:
+    """The name line of a field whose caption names a COMPANY ("c Employer's name,
+    address, and ZIP code", "Firm's name") is that company. No detector typed
+    "Northwind Analytics Inc", so it stayed untyped and waited for review. Only the
+    FIRST value line of the field (the name comes before the address), or a line
+    with a company word (Inc, LLC, Bank...), and never a line shaped like a street
+    or a city/state/ZIP."""
+    from dataclasses import replace
+
+    from ..pseudonymization.generator import looks_like_a_company
+    from .groups import _shape_mismatch
+
+    org_groups = {g.group_id: g for g in groups or [] if PiiType.ORG_PRIVATE in g.expected_types}
+    out = []
+    for c in candidates:
+        g = org_groups.get(c.group_id)
+        if (g is not None and c.pii_type is PiiType.UNCLASSIFIED_GROUP_VALUE and c.source is Source.GROUP
+                and g.value_lines):
+            first = g.value_lines[0].key() == c.line.key()
+            addressy = _shape_mismatch(c.text, [PiiType.PERSON])
+            if (first or looks_like_a_company(c.text)) and not addressy:
+                # The "no detector classified it" flag described the untyped state
+                # this resolves; any OTHER doubt stays.
+                untyped = "no detector classified it" in (c.review_reason or "")
+                c = replace(c, pii_type=PiiType.ORG_PRIVATE,
+                            needs_review=c.needs_review and not untyped,
+                            review_reason="" if untyped else c.review_reason,
+                            evidence=list(c.evidence) + [Evidence(Source.GROUP,
+                                                                  f"company line of '{g.label.text}'", 0.0)])
+        out.append(c)
+    return out
+
+
 def _type_unclassified_group_values(candidates: list) -> list:
     """A value under an unrecognised label that is shaped like a person's name is
     a PERSON, on its own evidence.
@@ -1072,6 +1105,7 @@ def analyse(
     # Pass 3 - labels, logical field groups, stacked/compound inference.
     groups, labels, group_candidates = build_groups(doc, candidates, rs)
     candidates.extend(group_candidates)
+    candidates = _type_organisation_group_values(candidates, groups)
     candidates = _type_unclassified_group_values(candidates)
 
     # Pass 1c - Presidio. Runs AFTER groups exist, since its context

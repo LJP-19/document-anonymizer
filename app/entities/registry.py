@@ -62,6 +62,7 @@ class EntityRegistry:
     DIGIT_KEYED = {
         PiiType.SSN, PiiType.ITIN, PiiType.EIN, PiiType.TIN,
         PiiType.BANK_ACCOUNT, PiiType.ROUTING_NUMBER, PiiType.CARD_NUMBER,
+        PiiType.STATE_TAX_ID,
     }
 
     #: Common street-suffix spellings that all mean the same thing. The same
@@ -129,6 +130,23 @@ class EntityRegistry:
     ) -> str:
         key = self.key_for(pii_type, text, discriminator)
         record = self._records.get(key)
+        if record is not None and record.user_edited:
+            record.occurrences += 1
+            return record.pseudonym
+        # Addresses are composed from per-component pseudonyms EVERY time, so each
+        # occurrence keeps its own case and punctuation while the street, city and
+        # ZIP stay the same across the whole document. A user's edit still wins.
+        if pii_type in (PiiType.ADDRESS, PiiType.CITY_STATE, PiiType.POSTAL_CODE, PiiType.STREET):
+            composed = self._address_composer().compose(text)
+            if composed is not None:
+                if record is None:
+                    self._records[key] = EntityRecord(key=key, original=text, pseudonym=composed, occurrences=1)
+                    if self.roster is not None:
+                        self.roster.record(pii_type, text, composed, self.document_name)
+                else:
+                    record.occurrences += 1
+                self._taken.add(composed.lower())
+                return composed
         if record is not None:
             record.occurrences += 1
             return record.pseudonym
@@ -174,6 +192,19 @@ class EntityRegistry:
         if self.roster is not None:
             self.roster.record(pii_type, text, pseudonym, self.document_name)
         return pseudonym
+
+    def _address_composer(self):
+        """One component registry per document: every street, city and ZIP is
+        mapped once and every way the document writes an address is composed from
+        those parts (app/pseudonymization/address.py)."""
+        comp = getattr(self, "_addresses", None)
+        if comp is None:
+            from ..pseudonymization.address import AddressComposer
+
+            comp = AddressComposer(self.scope, ok=lambda p: not self._reuses_document_word(p),
+                                   norm=self.normalize)
+            object.__setattr__(self, "_addresses", comp)
+        return comp
 
     def _reuses_document_word(self, pseudonym: str) -> bool:
         if not self.document_words:

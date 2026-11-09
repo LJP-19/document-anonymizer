@@ -10,6 +10,7 @@ watermark and the template's own text bound as values.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pymupdf
@@ -77,13 +78,20 @@ def test_form_1040_keeps_amounts_labels_and_state(f1040):
         assert keep in text, keep
 
 
-def test_form_1040_holds_only_the_firm_name(f1040):
-    s, _report, _text = f1040
-    held = {c.text for c in s.decisions.awaiting_review(s.candidates)}
-    assert held <= {"Whitfield Tax Advisors LLC"}, held
+def test_form_1040_firm_name_is_replaced_and_held_items_stay_readable(f1040):
+    """Owner, 0.42.5: firm and employer names are identity and are replaced. Anything
+    still held (a model's guess, which can differ between model builds) is left
+    readable - never applied - and never an amount."""
+    s, _report, text = f1040
+    assert "Whitfield Tax Advisors LLC" not in text
+    from app.decisions.authorization import is_amount_shaped
+
+    for c in s.decisions.awaiting_review(s.candidates):
+        assert not s.decisions.is_actionable(c)
+        assert not is_amount_shaped(c.text)
 
 
-IDENTITY_W2 = ["512-48-7391", "84-3127755", "Marcus T", "Feldman", "1450 Charleston Rd",
+IDENTITY_W2 = ["512-48-7391", "84-3127755", "Marcus T", "Feldman", "1450 Charleston Rd", "Northwind Analytics Inc",
                "Mountain View, CA 94043", "4817 Larkspur Ridge Dr", "Fremont, CA 94539", "113-4482-9"]
 
 
@@ -107,3 +115,64 @@ def test_w2_form_text_is_never_a_value(w2):
     for keep in ["For Informational Purposes", "For Official Use Only", "15 State",
                  "Employee's social security number"]:
         assert keep.replace("'", "’") in text or keep in text, keep
+
+
+# --- a jointly filed 1040 + the taxpayer's W-2 in ONE document (demo/joint_tw) -----
+JOINT = ROOT / "demo" / "joint_tw" / "Chen_Lin_2025_1040_W2.pdf"
+
+
+@pytest.fixture(scope="module")
+def joint(tmp_path_factory, monkeypatch_module):
+    return _process(JOINT, tmp_path_factory.mktemp("joint"))
+
+
+def test_joint_return_every_identity_value_is_replaced(joint):
+    s, report, text = joint
+    assert report.passed, [c for c in report.checks if not c.passed]
+    left = [v for v in [
+        "Wei-Ting", "Yu-Hsuan", "Pin-Yu", "Chia-Hao", "Chen", "Lin", "Shu-Fen Hsu",   # incl. 3-letter surnames
+        "547283916", "547-28-3916", "562108437", "618305742", "627419058",
+        "2318 Rosewood Ter", "Cupertino", "95014", "San Jose", "88 Innovation Way", "Bascom",
+        "Formosa Tax Partners LLC", "Pacific Rim Semiconductor Inc",                  # firm + employer
+        "P02468135", "77-4051836", "94-2716635", "348-1176-2",
+        "121042882", "7730158294", "(408) 555-0173", "weiting.chen@example.com",
+    ] if re.search(rf"(?<![\w-]){re.escape(v)}(?![\w-])", text)]   # whole words: "Lin" is in "Line"
+    assert not left, left
+    assert not s.decisions.awaiting_review(s.candidates)
+
+
+def test_joint_return_every_amount_and_label_is_untouched(joint):
+    import collections
+
+    from app.detection.deterministic import financial_tokens
+
+    with pymupdf.open(str(JOINT)) as d:
+        src = "\n".join(p.get_text() for p in d)
+    _s, _report, text = joint
+    assert collections.Counter(financial_tokens(src)) == collections.Counter(financial_tokens(text))
+    for keep in ["Your first name and middle initial", "Spouse's social security number".replace("'", "’"),
+                 "Dependent 2", "Social security wages", "Medicare wages and tips", "Firm’s name",
+                 "Semiconductor Engineer", "Pharmacist", "CA"]:
+        assert keep in text, keep
+
+
+def test_joint_return_one_pseudonym_per_value_across_all_pages(joint):
+    """Owner: the same person, SSN, address part, city, ZIP... gets the SAME pseudonym
+    on every page (the SSN is boxed on the 1040 and hyphenated on the W-2; the city is
+    alone on the 1040 and in a city/state/ZIP line on the W-2)."""
+    import re
+
+    s, _report, _text = joint
+    plan = s.plan()
+    seen: dict = {}
+    for t in plan.targets:
+        if t.pii_type.name in ("SSN", "EIN", "BANK_ACCOUNT", "ROUTING_NUMBER"):
+            key, rep = re.sub(r"\D", "", t.original), re.sub(r"\D", "", t.replacement)
+        else:
+            key, rep = t.original.lower(), t.replacement.lower()
+        assert seen.setdefault((t.pii_type.name, key), rep) == rep, (t.original, t.replacement, seen[(t.pii_type.name, key)])
+    by = {t.original: t.replacement for t in plan.targets}
+    city = by["Cupertino"]
+    assert by["Cupertino, CA 95014"].startswith(city + ", CA ")          # state kept, city consistent
+    assert by["Cupertino, CA 95014"].endswith(by["95014"])               # ZIP consistent
+    assert re.sub(r"\D", "", by["547-28-3916"]) == re.sub(r"\D", "", by["547283916"])

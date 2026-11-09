@@ -163,6 +163,14 @@ _FIGURE_PATTERNS: list[tuple[ProtectionKind, str, re.Pattern]] = [
      re.compile(
          r"(?<![\w./,\-])(?:1040(?:-?(?:SR|NR|X|ES))?|1065|1120(?:-?S)?|1099(?:-?[A-Z]{2,5})?|"
          r"941(?:-?X)?|940|W-?[2-9]|SS-?4|8832|2553|4868|7004|8949|8962)(?![\w/\-])", re.I)),
+    # Form numbers the 1040 names in its own lines ("16 Tax (see instructions). Check
+    # if any from Form(s): 1 8814 2 4972 3") - only AFTER "Form(s)" on the line, so a
+    # house number 4972 or 2441 in an address is never protected.
+    (ProtectionKind.FORM_NUMBER, "form numbers named by the form",
+     re.compile(r"\bforms?(?:\(s\))?:?(?:\s+\d{1,4}[a-z]?){1,8}", re.I)),
+    # The W-2/W-3 Copy A identifier printed alone in its box.
+    (ProtectionKind.FORM_NUMBER, "form identifier",
+     re.compile(r"^\s*(?:22222|33333)\s*$")),
     (ProtectionKind.FORM_NUMBER, "page number",
      re.compile(r"\bpage\s+\d+(?:\s+of\s+\d+)?(?![\w])", re.I)),
 ]
@@ -320,7 +328,11 @@ class ProtectionIndex:
         for key, line in lines.items():
             text = line.text
             for start, end, kind, reason in find_figures(text):
-                if key in identity_lines or (key in identity_from and start >= identity_from[key]):
+                # The waiver is for an identifier's own digits. A FORM identifier
+                # ("22222" on the W-2) or a form number the form names is never a
+                # client's value, whichever caption it sits under.
+                never_waived = reason in ("form identifier", "form numbers named by the form")
+                if not never_waived and (key in identity_lines or (key in identity_from and start >= identity_from[key])):
                     continue
                 index._add(ProtectedRegion(
                     line.page_no, key, start, end, line.rect_for(start, end), text[start:end],

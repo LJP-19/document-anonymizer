@@ -300,6 +300,11 @@ rules:
     context_required: true
 
 labels:
+  # W-2 box c "Employer's name, address, and ZIP code", 1099 "PAYER'S name, street
+  # address...": the name is the COMPANY. Longer than the generic pattern below, so it
+  # wins the tie on where the match ends.
+  - pattern: '(employer|payer|firm|company|business|filer).?s? name[, ]+(street )?address[, ]*(and)?[ ]*(zip|postal)?( code)?'
+    expects: [ORG_PRIVATE, ADDRESS, POSTAL_CODE]
   - pattern: 'name[, ]+address[, ]*(and)?[ ]*(zip|postal)( code)?'
     expects: [PERSON, ADDRESS, POSTAL_CODE]
   - pattern: 'name[, ]+(and )?address'

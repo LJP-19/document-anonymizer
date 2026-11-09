@@ -158,8 +158,20 @@ def resolve_overlaps(candidates: list[Candidate]) -> list[Candidate]:
     return sorted(resolved, key=lambda c: (c.page_no, c.rect[1], c.rect[0]))
 
 
+def _rank(c: Candidate) -> float:
+    """A propagated occurrence of a LABEL-CONFIRMED entity outranks a model's guess
+    (but not a rule or a label). At equal rank the longer span won, so on the macOS
+    model build a guessed ORG "Torvin Quell's account" beat the confirmed person
+    "Torvin Quell", was held as an unconfirmed company, and left the name readable
+    (CI #135, test_pseudonymization_identity A/C)."""
+    rank = float(SOURCE_RANK[c.source])
+    if c.source is Source.COVERAGE and any(e.detail.startswith("same value as an entity") for e in c.evidence):
+        rank += 0.5
+    return rank
+
+
 def _pick(a: Candidate, b: Candidate) -> tuple[Candidate, Candidate]:
-    ra, rb = SOURCE_RANK[a.source], SOURCE_RANK[b.source]
+    ra, rb = _rank(a), _rank(b)
     if ra != rb:
         return (a, b) if ra > rb else (b, a)
     span_a, span_b = a.end - a.start, b.end - b.start

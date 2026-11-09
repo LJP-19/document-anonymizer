@@ -411,7 +411,7 @@ def name_control_hits(doc: Document, entities: Iterable["KnownEntity"], covered:
             existing = covered.get(line.key(), [])
             for match in re.finditer(r"(?<![A-Z0-9])[A-Z]{2,4}(?![A-Z0-9])", line.text):
                 entity = controls.get(match.group())
-                if entity is None or any(match.start() < e and s < match.end() for s, e in existing):
+                if entity is None or any(match.start() < e and s < match.end() for s, e, *_ in existing):
                     continue
                 rect = line.rect_for(match.start(), match.end())
                 if rect is None:
@@ -532,9 +532,16 @@ def propagate(
     if not entities:
         return []
 
-    covered: dict[tuple[int, int, int], list[tuple[int, int]]] = {}
+    # What already covers a span. A MODEL's guess of another type does not block a
+    # confirmed entity: on the macOS model build an ORG guess "Torvin Quell's
+    # account" kept the confirmed person "Torvin Quell" from ever being proposed,
+    # and the name stayed readable. Overlap resolution then decides (resolve._rank:
+    # the confirmed entity outranks a model guess). Same-type guesses still count.
+    covered: dict[tuple[int, int, int], list[tuple[int, int, object]]] = {}
     for candidate in candidates:
-        covered.setdefault(candidate.line.key(), []).append((candidate.start, candidate.end))
+        weak_type = (candidate.pii_type if candidate.source in (Source.NER, Source.AUDIT)
+                     and candidate.group_id is None else None)
+        covered.setdefault(candidate.line.key(), []).append((candidate.start, candidate.end, weak_type))
 
     from .textnorm import fold
 
@@ -567,7 +574,8 @@ def propagate(
             existing = covered.get(line.key(), [])
             for entity, form, pattern in patterns:
                 for match in pattern.finditer(line.text):
-                    if any(match.start() < e and s < match.end() for s, e in existing):
+                    if any(match.start() < e and s < match.end()
+                           and (weak is None or weak is entity.pii_type) for s, e, weak in existing):
                         continue
                     if entity.pii_type is PiiType.PERSON and ORG_SUFFIX_AFTER.match(
                         _after_known_components(line.text, match.end(), components)[:20]
@@ -625,6 +633,6 @@ def propagate(
                             ambiguous=ambiguous,
                         )
                     )
-                    existing.append((match.start(), match.end()))
+                    existing.append((match.start(), match.end(), None))
     found.extend(name_control_hits(doc, entities, covered))
     return found

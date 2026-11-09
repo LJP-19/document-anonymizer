@@ -16,6 +16,7 @@
       "gliner": false,
       "has_detector": true,
       "label_patterns": [
+        "(employer|payer|firm|company|business|fi",
         "name[, ]+address[, ]*(and)?[ ]*(zip|post",
         "name[, ]+(and )?address",
         "(mailing |home |business |street |reside",
@@ -274,6 +275,7 @@
       "gliner": true,
       "has_detector": true,
       "label_patterns": [
+        "(employer|payer|firm|company|business|fi",
         "((business|company|entity|trade|dba|doin",
         "(name of (business|company|entity|employ"
       ],
@@ -346,6 +348,7 @@
       "gliner": true,
       "has_detector": true,
       "label_patterns": [
+        "(employer|payer|firm|company|business|fi",
         "name[, ]+address[, ]*(and)?[ ]*(zip|post",
         "(zip|postal)( code)?"
       ],

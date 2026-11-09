@@ -178,7 +178,13 @@ def generate(pii_type: PiiType, value: str, scope: str = "document") -> str:
     if pii_type is PiiType.TIN and re.fullmatch(r"P\d{8}", value.strip()):
         return f"P{fake.numerify('########')}"  # a PTIN keeps its shape
 
-    if pii_type in (PiiType.EIN, PiiType.TIN, PiiType.STATE_TAX_ID):
+    if pii_type is PiiType.STATE_TAX_ID:
+        # Every state numbers its accounts differently ("348-1176-2"): keep the
+        # shape, change the digits - never force the federal EIN pattern on it.
+        out = _digits_like(value, fake)
+        return out if out != value else _digits_like(value + "#", fake)[: len(value)]
+
+    if pii_type in (PiiType.EIN, PiiType.TIN):
         return f"{fake.numerify('##')}-{fake.numerify('#######')}"
 
     if pii_type is PiiType.EMAIL:

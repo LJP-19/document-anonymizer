@@ -3091,8 +3091,119 @@ def test_a_confirmed_persons_name_settles_only_detector_doubt():
     from tests.test_authorization import cand
 
     words = confirmed_name_words([cand("Ines Okonkwo-Brandt", source=Source.GROUP, label_confirmed=True)])
-    low = cand("Okonkwo-Brandt", source=Source.NER, needs_review=True, review_reason="low model confidence")
+    low = cand("Ines Okonkwo-Brandt", source=Source.NER, needs_review=True, review_reason="low model confidence")
     assert assess(low, words).eligible
-    ai = cand("Okonkwo-Brandt", source=Source.NER, needs_review=True,
+    ai = cand("Ines Okonkwo-Brandt", source=Source.NER, needs_review=True,
               review_reason="low model confidence; the AI review objected: not personal")
     assert not assess(ai, words).eligible
+
+
+def test_a_model_guess_never_beats_a_confirmed_person():
+    """CI #135 (macOS model build): an ORG guess "Torvin Quell's account" overlapped
+    the confirmed person, blocked propagation and won overlap resolution at equal
+    rank; held as an unconfirmed company, the name stayed readable. Built by hand."""
+    from app.detection.resolve import resolve_overlaps
+    from app.detection.types import Candidate, Evidence, PiiType, Source
+    from tests.test_authorization import _line
+
+    ln = _line("Mr. Quell signed. Torvin Quell's account was closed.")
+    t = ln.text
+
+    def at(phrase, pii, src, ev):
+        st = t.index(phrase)
+        return Candidate(pii_type=pii, text=phrase, page_no=0, rect=ln.rect_for(st, st + len(phrase)), line=ln,
+                         start=st, end=st + len(phrase), confidence=0.7, source=src,
+                         evidence=[Evidence(src, ev, 0.5)])
+
+    out = resolve_overlaps([
+        at("Torvin Quell's account", PiiType.ORG_PRIVATE, Source.NER, "spaCy ORG"),
+        at("Torvin Quell", PiiType.PERSON, Source.COVERAGE, "same value as an entity named in a subject field"),
+    ])
+    assert [(c.text, c.pii_type) for c in out] == [("Torvin Quell", PiiType.PERSON)]
+
+
+def test_address_pseudonyms_are_composed_from_consistent_parts():
+    from app.detection.types import PiiType as T
+    from app.entities.registry import EntityRegistry
+
+    r = EntityRegistry(scope="t")
+    city = r.pseudonym_for(T.ADDRESS, "Cupertino")
+    zip_ = r.pseudonym_for(T.POSTAL_CODE, "95014")
+    line = r.pseudonym_for(T.ADDRESS, "Cupertino, CA 95014")
+    caps = r.pseudonym_for(T.ADDRESS, "CUPERTINO CA 95014-2231")
+    assert line == f"{city}, CA {zip_}"                          # same city, same ZIP, state kept
+    assert caps.startswith(f"{city.upper()} CA {zip_}-")         # case kept, ZIP+4 kept
+    s1 = r.pseudonym_for(T.STREET, "2318 Rosewood Ter")
+    assert r.pseudonym_for(T.ADDRESS, "2318 ROSEWOOD TERRACE") == s1.upper()
+    full = r.pseudonym_for(T.ADDRESS, "1880 S Bascom Ave Ste 210, Campbell, CA 95008")
+    assert " Ste " in full and full.endswith(", CA " + r.pseudonym_for(T.POSTAL_CODE, "95008"))
+    assert r.pseudonym_for(T.CITY_STATE, "Campbell, CA") == f"{r.pseudonym_for(T.ADDRESS, 'Campbell')}, CA"
+
+
+@pytest.mark.parametrize("value", ["$1,200.00", "(1,500)", "2,905.", "612450.00", "$85", "12.5%", "1,234,567"])
+def test_an_amount_is_never_transformed_automatically_whatever_its_label(value):
+    """Owner's most vital rule. Even under a VERIFIED identity caption (the W-2 wage
+    boxes once were), an amount waits for a person."""
+    from app.decisions.authorization import assess
+    from app.detection.types import PiiType, Source
+    from tests.test_authorization import cand
+
+    c = cand(value, pii_type=PiiType.SSN, source=Source.GROUP, label_confirmed=True)
+    assert not assess(c).eligible
+    assert assess(cand(value, pii_type=PiiType.SSN, source=Source.MANUAL)).eligible  # a person may
+
+
+@pytest.mark.parametrize("value", ["512-48-7391", "512487391", "84-3127755", "121000358", "94539",
+                                   "(510) 555-0142", "03/14/2011", "P01234567", "348-1176-2"])
+def test_identifiers_are_not_mistaken_for_amounts(value):
+    from app.decisions.authorization import is_amount_shaped
+
+    assert not is_amount_shaped(value)
+
+
+def test_the_financial_integrity_check_sees_bare_amounts():
+    from app.detection.deterministic import financial_tokens
+
+    toks = financial_tokens("Wages 612450.00 tax 148920.00 total 2,905. 03/14/2011 512-48-7391 (510) 555-0142")
+    assert {"612450.00", "148920.00", "2,905"} <= set(toks)
+    assert not any(t in toks for t in ("03/14/2011", "512-48-7391", "555-0142"))
+
+
+def test_firm_and_employer_names_are_replaced_when_their_caption_confirms_them():
+    from app.decisions.authorization import assess
+    from app.detection.types import PiiType, Source
+    from tests.test_authorization import cand
+
+    firm = cand("Formosa Tax Partners LLC", pii_type=PiiType.ORG_PRIVATE, source=Source.GROUP, label_confirmed=True)
+    assert assess(firm).eligible
+    guess = cand("Acme Corp", pii_type=PiiType.ORG_PRIVATE, source=Source.NER, ambiguous=True)
+    assert not assess(guess).eligible                     # a model's guess still waits
+
+
+def test_the_verifier_baseline_object_is_never_treated_as_empty():
+    from app.verification.verifier import _OutsideCounts
+
+    b = _OutsideCounts("tax-exempt interest and tax withheld")
+    assert bool(b) and (b or {}).get("tax") == 2
+
+
+def test_a_lone_surname_in_prose_waits_but_a_titled_one_is_the_person():
+    """'Mr. Okonkwo-Brandt recharacterized...' is the confirmed taxpayer; 'Smith &
+    Wesson makes firearms' beside a confirmed John Smith is not provably him."""
+    from app.decisions.authorization import assess, confirmed_name_words
+    from app.detection.types import Candidate, Evidence, PiiType, Source
+    from tests.test_authorization import _line, cand
+
+    words = confirmed_name_words([cand("Ines Okonkwo-Brandt", source=Source.GROUP, label_confirmed=True),
+                                  cand("John Smith", source=Source.GROUP, label_confirmed=True)])
+
+    def in_prose(text, name):
+        ln = _line(text)
+        st = text.index(name)
+        return Candidate(pii_type=PiiType.PERSON, text=name, page_no=0, rect=ln.rect_for(st, st + len(name)),
+                         line=ln, start=st, end=st + len(name), confidence=0.4, source=Source.NER,
+                         evidence=[Evidence(Source.NER, "spaCy PERSON", 0.4)], needs_review=True,
+                         review_reason="low model confidence")
+
+    assert assess(in_prose("Mr. Okonkwo-Brandt recharacterized it.", "Okonkwo-Brandt"), words).eligible
+    assert not assess(in_prose("Smith & Wesson makes firearms.", "Smith"), words).eligible

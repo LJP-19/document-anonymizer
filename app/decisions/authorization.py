@@ -104,6 +104,8 @@ LABEL_RESOLVABLE_DOUBTS = (
 #: a filer's name printed in every page header is still the filer's name. Hard
 #: protection (labels, figures, prior replacements) is never overridden - the gate
 #: rejects those candidates outright.
+SHORT_NAME_DOUBT = "matched on part of a known name"
+
 SOFT_PROTECTION_DOUBTS = ("sits on running header text", "sits on running footer text",
                           "sits on static boilerplate text", "sits on form instruction text")
 
@@ -278,6 +280,19 @@ def _made_of_confirmed_address(c: Candidate, confirmed_words: set) -> bool:
     return len(hits) >= 2 and all(t in _STATE_CODES for t in rest)
 
 
+_TITLE_BEFORE = re.compile(r"(?:mr|mrs|ms|miss|mx|dr|prof)\.?\s+$", re.I)
+
+
+def _unmistakably_the_person(c: Candidate) -> bool:
+    """A full name (two or more name words), or a surname right after a title
+    ("Mr. Okonkwo-Brandt"). A lone surname in prose can be something else ("Smith &
+    Wesson makes firearms") and stays a person's decision."""
+    if len(_name_words(c.text)) >= 2:
+        return True
+    before = c.line.text[: c.start] if c.line is not None else ""
+    return bool(_TITLE_BEFORE.search(before))
+
+
 def _made_of_confirmed_names(c: Candidate, confirmed_words: set) -> bool:
     if c.pii_type is not PiiType.PERSON or not confirmed_words or c.source is Source.REGEX:
         return False
@@ -285,10 +300,34 @@ def _made_of_confirmed_names(c: Candidate, confirmed_words: set) -> bool:
     return bool(words) and all(w in confirmed_words for w in words)
 
 
+_AMOUNT_SHAPES = (
+    # $1,200.00  (1,500)  -2,905.  1,234,567
+    re.compile(r"^\(?[-\u2212]?\$?\s?\d{1,3}(?:,\d{3})+(?:\.\d{0,2})?\)?$"),
+    # 612450.00  $85.10  (25.00)  - cents make it money
+    re.compile(r"^\(?[-\u2212]?\$?\s?\d+\.\d{2}\)?$"),
+    # $85  85%  12.5 %
+    re.compile(r"^\(?[-\u2212]?\$\s?\d+(?:\.\d+)?\)?$|^[-\u2212]?\d+(?:\.\d+)?\s?%$"),
+)
+
+
+def is_amount_shaped(text: str) -> bool:
+    """A whole value that is a money amount or a percentage. An SSN, EIN, routing
+    or account number, ZIP, phone or date never matches (no thousands separators,
+    no cents, no currency or percent sign)."""
+    t = " ".join((text or "").split())
+    return bool(t) and any(p.match(t) for p in _AMOUNT_SHAPES)
+
+
 def assess(c: Candidate, confirmed_words: Optional[set] = None) -> Assessment:
     """May `c` be transformed with no person deciding? With the reason either way."""
     if c.source is Source.MANUAL:
         return Assessment(True, "added by the user")
+    # FINANCIAL VALUES ARE NEVER CHANGED AUTOMATICALLY (owner's most vital rule).
+    # Whatever a detector, a label or a model concluded, a value shaped like an
+    # amount waits for a person. Checked here, so it holds at registration AND at
+    # the transformation boundary (build_plan re-assesses every auto approval).
+    if is_amount_shaped(c.text):
+        return Assessment(False, "a financial amount - never changed automatically")
     if c.needs_review:
         exact_entity = (c.source is Source.COVERAGE and not getattr(c, "ambiguous", False)
                         and any(e.detail.startswith("same value as an entity") for e in c.evidence))
@@ -300,7 +339,8 @@ def assess(c: Candidate, confirmed_words: Optional[set] = None) -> Assessment:
         # a validator failure or ambiguity: those are not detector doubts.
         detector_doubt_only = bool(parts) and all(
             any(p.startswith(d) for d in LABEL_RESOLVABLE_DOUBTS) for p in parts)
-        settled = detector_doubt_only and confirmed_words and _made_of_confirmed_names(c, confirmed_words)
+        settled = (detector_doubt_only and confirmed_words and _made_of_confirmed_names(c, confirmed_words)
+                   and _unmistakably_the_person(c))
         # An IRS name control (first 4 letters of the surname on a scanline) is
         # only ever produced from a subject a label confirmed; its flag says where
         # it came from, it is not doubt. Left readable, "QUIL" beside a replaced
@@ -309,7 +349,22 @@ def assess(c: Candidate, confirmed_words: Optional[set] = None) -> Assessment:
                 and any(e.detail.startswith("name control (") for e in c.evidence)
                 and all(p.startswith("the first letters of a known surname") for p in parts)):
             settled = True
-        if not settled and not (exact_entity and parts and all(p.startswith(SOFT_PROTECTION_DOUBTS) for p in parts)):
+        # The short-name caution ("matched on part of a known name": Li/Wu/Lim/Kai)
+        # guards prose; an exact occurrence of the confirmed entity, or its IRS name
+        # control, made only of that person's confirmed name words, is that person
+        # (benchmark: "KAI" in its own first-name field and "LIM" on the voucher).
+        short_ok = confirmed_words and _made_of_confirmed_names(c, confirmed_words)
+        # ...but only for a value that sits in ITS OWN labelled field ("KAI" under
+        # "Your first name"). A lone surname in prose ("Smith & Wesson makes
+        # firearms") is exactly what the caution is for, and stays held.
+        own_field = getattr(c, "label_confirmed", False) or any(
+            e.detail.startswith("value of the labelled field") for e in c.evidence)
+        allowed = SOFT_PROTECTION_DOUBTS + ((SHORT_NAME_DOUBT,) if short_ok and own_field else ())
+        if (not settled and c.source is Source.COVERAGE and parts and short_ok
+                and any(e.detail.startswith("name control (") for e in c.evidence)
+                and all(p.startswith(("the first letters of a known surname", SHORT_NAME_DOUBT)) for p in parts)):
+            settled = True
+        if not settled and not (exact_entity and parts and all(p.startswith(allowed) for p in parts)):
             why = (c.review_reason or "flagged for review").strip()
             return Assessment(False, f"flagged for review: {why}")
     if getattr(c, "ambiguous", False):
@@ -318,8 +373,10 @@ def assess(c: Candidate, confirmed_words: Optional[set] = None) -> Assessment:
         return Assessment(False, "a blackout is the user's decision")
     if c.pii_type is PiiType.UNCLASSIFIED_GROUP_VALUE:
         return Assessment(False, "nothing could say what kind of value this is")
-    if c.pii_type is PiiType.ORG_PRIVATE:
-        return Assessment(False, "organization or employer name - not PII unless you decide it is")
+    # Organization names (firm, employer, payer, any third party) are identity too
+    # (owner, 0.42.5): they follow the same rules as every other type - replaced
+    # when a label confirms them or they repeat a confirmed one; a company only a
+    # model proposed still waits for review like any unconfirmed proposal.
     ev = _evidence(c)
     if _own_validator_failed(c):
         return Assessment(False, "fails its structural validation")

@@ -139,6 +139,10 @@ def build_groups(
     return groups, labels, extra
 
 
+#: W-2 box f: caption 50 pt under the address it names; boxes are under ~80 pt tall.
+ABOVE_CAPTION_MAX_DISTANCE = 80.0
+
+
 def _values_above_caption(label, lines_by_page, label_keys, claimed, styles):
     """A caption printed at the BOTTOM of its box, under the value: W-2 box f
     "Employee's address and ZIP code" sits below the address it names, so the
@@ -150,6 +154,13 @@ def _values_above_caption(label, lines_by_page, label_keys, claimed, styles):
     from .layout_style import in_form_style
 
     if label.unknown or not label.expected_types:
+        return []
+    # Only a NAME/ADDRESS/COMPANY box prints its caption under a multi-line value
+    # (W-2 box f). An identifier caption that found nothing beneath it is an EMPTY
+    # box (the W-2's blank second copy), and reaching up bound the copy above's
+    # control number as an SSN and the "22222" form identifier as an EIN.
+    if not set(label.expected_types) & {PiiType.ADDRESS, PiiType.PERSON, PiiType.ORG_PRIVATE,
+                                         PiiType.STREET, PiiType.CITY_STATE}:
         return []
     line = label.line
     if label.start > 2:
@@ -163,10 +174,16 @@ def _values_above_caption(label, lines_by_page, label_keys, claimed, styles):
          and o.text.strip()),
         key=lambda o: -o.bbox[3],
     )
+    label_rows = sorted(lb_line.bbox[3] for lb_line in lines_by_page.get(line.page_no, [])
+                        if lb_line.key() in label_keys and lb_line is not line)
     found: list[Line] = []
     for o in above:
         if len(found) >= cap:
             break
+        if line.bbox[1] - o.bbox[3] > ABOVE_CAPTION_MAX_DISTANCE:
+            break  # beyond one box: another field's value
+        if any(o.bbox[3] < y <= line.bbox[1] for y in label_rows):
+            break  # another caption sits between them: a different box
         if (o.key() in label_keys or o.key() in claimed or _symbol_font(o)
                 or (styles and in_form_style(o, styles)) or _OWN_LABEL.match(o.text)
                 or _BOX_CAPTION.match(o.text) or _same_template(o, line)

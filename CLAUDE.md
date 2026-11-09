@@ -2702,3 +2702,30 @@ binds only the first column), PTIN typed MRN and held, ZIP held as PROBABLE.
 - Forms benchmark (benchmark/run_forms_benchmark.py, GLiNER on): R 0.845 -> 0.991, P 1.000.
   When comparing against an old checkout with --app-root, copy resources/models/gliner-pii
   into it FIRST - without it the baseline silently runs without GLiNER.
+
+## 0.42.5: owner's rules - amounts never auto, one pseudonym per value, firms are PII
+
+- **`authorization.is_amount_shaped` is an ABSOLUTE veto in `assess()`** (before every
+  other rule, after MANUAL): an amount-shaped value is never transformed without a person,
+  whatever label or model typed it. `deterministic.financial_tokens` also counts BARE
+  amounts (`BARE_AMOUNT_RE`), so the verifier sees a changed W-2 box.
+- **Addresses are composed per component** (`app/pseudonymization/address.py`,
+  `EntityRegistry._address_composer`): street, unit number, city, ZIP each mapped once per
+  document; the STATE is never changed; composed every time so each occurrence keeps its
+  case. A user edit still wins. Before: "Cupertino" and "Cupertino, CA 95014" got two
+  cities, and a state inside a city line was changed.
+- **ORG_PRIVATE is no longer an absolute veto** (owner reversed 0.41.0): label-confirmed
+  firm/employer names are replaced; model-only companies still wait (corroboration gate).
+  "Employer's/Payer's/Firm's name, address, and ZIP code" expects ORG first
+  (`_type_organisation_group_values`).
+- **A model guess never hides a confirmed entity** (CI #135, macOS): `propagate` is no longer
+  blocked by a MODEL candidate of another type, and `resolve._rank` puts a "same value as an
+  entity" occurrence above model guesses. Reproduced by injecting the guess (test).
+- Short-name caution settled only for a value in its OWN field or the name control; a
+  confirmed name settles a detector doubt only for a full name or a titled surname
+  ("Mr. X"). "Smith & Wesson" beside a confirmed John Smith stays held - a test pins it.
+- `_values_above_caption`: name/address/company captions only, within 80 pt, no caption in
+  between (the empty W-2 copy bound the control number as an SSN and "22222" as an EIN).
+- Verifier baseline (`_OutsideCounts`) counts with the check's own whole-token rule and is
+  ALWAYS truthy - an empty dict subclass made `outside or {}` drop the baseline silently.
+- Open: the W-2 control number (centred far from its caption) is not detected.

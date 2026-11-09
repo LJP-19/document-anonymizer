@@ -273,21 +273,42 @@ def _token_counts_outside_targets(src, plan: TransformationPlan) -> dict:
     now compared with this baseline: a fragment of a value that really survived
     raises the output count above it, so a genuine leak still fails.
     """
-    counts: dict = {}
     by_page: dict = {}
     for t in plan.targets:
-        by_page.setdefault(t.page_no, []).append(t.rect)
+        # The target's OWN glyphs when known: removal is per glyph, so a form word
+        # inside a wide target's bounding box survives - excluding it here made the
+        # baseline one short ("Tax" in "Formosa Tax Partners LLC" vs 32 form "Tax").
+        glyphs = [r for r in (getattr(t, "char_rects", None) or []) if r]
+        by_page.setdefault(t.page_no, []).extend(glyphs or [t.rect])
+    kept_words: list[str] = []
     for page_no, page in enumerate(src):
         rects = by_page.get(page_no, [])
         for w in page.get_text("words"):
             cx, cy = (w[0] + w[2]) / 2, (w[1] + w[3]) / 2
             if any(r[0] - 0.5 <= cx <= r[2] + 0.5 and r[1] - 0.5 <= cy <= r[3] + 0.5 for r in rects):
                 continue
-            for tok in re.split(r"[\s,]+", w[4]):
-                tok = tok.strip(".,;:()").lower()
-                if tok:
-                    counts[tok] = counts.get(tok, 0) + 1
-    return counts
+            kept_words.append(w[4])
+    return _OutsideCounts(_normalize(" ".join(kept_words)))
+
+
+class _OutsideCounts(dict):
+    """Per-token baseline counted with the SAME whole-token rule the checks use on
+    the output (`_count_value_occurrences`). Splitting words separately counted
+    "Tax-exempt" as no "tax" while the check counted it, so the baseline came out
+    one short and a correctly redacted return failed verification."""
+
+    def __init__(self, text: str):
+        super().__init__()
+        self._text = text
+
+    def __bool__(self) -> bool:
+        # Empty until queried - but never "no baseline": `outside or {}` must keep it.
+        return True
+
+    def get(self, key, default=0):
+        if key not in self:
+            self[key] = _count_value_occurrences(self._text, key)
+        return dict.get(self, key, default)
 
 
 def _check_partial_redaction(report: VerificationReport, plan: TransformationPlan, out_norm: str,

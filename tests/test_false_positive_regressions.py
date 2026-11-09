@@ -156,11 +156,19 @@ def test_a_possessive_organization_label_is_not_a_person_label(label):
     assert _match_label(label, load_rules())[0] == [PiiType.ORG_PRIVATE]
 
 
-def test_organization_names_are_held_not_replaced():
-    """Owner: organization and employer names are not PII."""
+def test_a_firm_name_under_its_caption_is_replaced():
+    """Owner, 0.42.5 (reverses 0.41.0): firm and employer names are identity and are
+    replaced when their caption confirms them."""
     _doc, result, decisions = analysed("Firm's name: Northgate Tax Partners LLC")
     orgs = [c for c in result.candidates if "Northgate" in c.text]
-    assert orgs and not any(decisions.is_actionable(c) for c in orgs)
+    assert orgs and all(decisions.is_actionable(c) for c in orgs)
+
+
+def test_a_company_only_a_model_proposed_still_waits():
+    """The corroboration gate still holds a company nothing confirms: prose mentions
+    ("Rose Bowl tickets, Hunter boots") must never be replaced on a model's say-so."""
+    _doc, result, decisions = analysed("Rose Bowl tickets, Hunter boots and Bill of Sale fees are not deductible.")
+    assert not any(decisions.is_actionable(c) for c in result.candidates)
 
 
 def test_a_value_beside_its_label_on_the_same_row_is_bound(tmp_path):

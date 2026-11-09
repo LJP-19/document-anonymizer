@@ -157,7 +157,8 @@ def build_worksheet(path: Path) -> FormDoc:
         d.text(p, 36, 170 + 12 * i, line, size=8, category="instruction")
     d.text(p, 36, 220, "Preparer use only", size=8, category="heading")
     d.label(p, 36, 236, "Firm's name")
-    d.value(p, 120, 236, "Northgate Tax Partners LLC", "organization", pii=False, size=9)
+    # Owner, 0.42.5: a firm/employer name under its caption IS identity (replaced).
+    d.value(p, 120, 236, "Northgate Tax Partners LLC", "organization", pii=True, size=9)
     d.label(p, 300, 236, "Spouse's name")
     d.value(p, 380, 236, "Bela Quell", "person", size=9)
     d.text(p, 280, 760, "Page 2 of 2", size=8, category="page_number")

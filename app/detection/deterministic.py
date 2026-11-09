@@ -268,9 +268,22 @@ def detect_deterministic(doc: Document, ruleset: Optional[RuleSet] = None) -> li
     return out
 
 
+#: Bare amounts as tax forms print them: W-2 "176100.00", 1040 "612,450" / "2,905."
+#: - no currency sign. The integrity check missed these entirely, so a changed W-2
+#: wage box could have passed "financial values preserved".
+BARE_AMOUNT_RE = re.compile(
+    r"(?<![\w.,/$-])(?:\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+\.\d{2})(?![\w,/-]|\.\d)"
+)
+
+
 def financial_tokens(text: str) -> list[str]:
-    """Currency and percentage tokens used by the integrity check (section 41)."""
+    """Currency, percentage and bare-amount tokens used by the integrity check
+    (section 41)."""
+    spans = [m.span() for m in MONEY_RE.finditer(text)]
+    bare = [m.group() for m in BARE_AMOUNT_RE.finditer(text)
+            if not any(a <= m.start() < b for a, b in spans)]
     return sorted(
         [m.group().replace(" ", "") for m in MONEY_RE.finditer(text)]
         + [m.group().replace(" ", "") for m in PERCENT_RE.finditer(text)]
+        + bare
     )

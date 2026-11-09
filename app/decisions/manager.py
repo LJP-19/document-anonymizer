@@ -87,9 +87,6 @@ class DecisionManager:
                 state, origin = DecisionState.ACCEPTED, AuthOrigin.AUTO_APPROVED
             else:
                 state, origin = DecisionState.SKIPPED, AuthOrigin.REVIEW_REQUIRED
-                if c.pii_type is PiiType.ORG_PRIVATE and "organization" not in (c.review_reason or ""):
-                    c.review_reason = ((c.review_reason + "; ") if c.review_reason else "") + \
-                        "organization or employer name - kept unless you choose to replace it"
                 c.needs_review = True
                 if not c.review_reason:
                     c.review_reason = verdict.reason

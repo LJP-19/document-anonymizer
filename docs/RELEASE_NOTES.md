@@ -1,3 +1,27 @@
+### What changed in 0.42.5
+
+**Amounts are never changed automatically - enforced at the last step.** Whatever any
+detector, label or model concludes, a value shaped like an amount ($1,200.00,
+612450.00, 2,905., (1,500), 12.5%) is left for a person. The export check now also
+compares bare amounts as tax forms print them (W-2 "176100.00"), not only "$" amounts.
+
+**One pseudonym per value across the whole document, for every kind of value.**
+Addresses are now replaced part by part, like names: the same street, city and ZIP get
+the same replacement wherever they appear ("Cupertino" in the 1040 City box and
+"Cupertino, CA 95014" on the W-2). The state is never changed. State tax IDs keep
+their own format.
+
+**Firm and employer names are replaced** when their caption identifies them (Firm's
+name, W-2 box c Employer's name). A company only a model guessed at still waits for
+your review.
+
+**Short surnames** (Lin, Lim, Wu...) in their own name fields and in the IRS name
+control are replaced; a lone surname in ordinary sentences still waits for review.
+
+**Fixes:** the macOS test failure (a model's guess could hide a confirmed person's
+name in a sentence); form numbers 8814/4972 and the W-2 "22222" are form text;
+the export check no longer fails on words a form shares with a firm's name.
+
 ### What changed in 0.42.4
 
 Tested on the official IRS Form 1040 and Form W-2, filled with an invented return.

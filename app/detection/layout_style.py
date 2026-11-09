@@ -148,7 +148,11 @@ def veto_form_styled_proposals(
             # the standalone joint-name pattern ("X and Y Z") is a proposal too
             or (c.source is Source.GROUP and any("joint-name" in e.detail for e in c.evidence))
         )
-        if proposal and c.pii_type in WORDING_TYPES and in_form_style(c.line, styles):
+        # A MODEL's number set in the form's own typeface is the form's number
+        # (line "16", "Form(s) 8814 / 4972"): GLiNER called 4972 a zip code. A
+        # filled value is printed in the value font, and rules are never vetoed here.
+        model_number = c.source is Source.NER and any(ch.isdigit() for ch in c.text)
+        if proposal and (c.pii_type in WORDING_TYPES or model_number) and in_form_style(c.line, styles):
             dropped += 1
             continue
         kept.append(c)
