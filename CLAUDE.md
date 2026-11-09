@@ -2650,3 +2650,24 @@ passes looks_like_person, which is why the word list exists). It never clears it
 together with any other doubt (an AI objection stays). Tests in
 test_authorization.py build the disagreement by hand; mutation-checked both ways.
 Local CI-stack run: 810 passed, 9 skipped, 1 xfailed; FP benchmark 0 of 444.
+
+## Comb fields: one digit per box must be read as ONE value (0.42.3)
+
+Found by running the app on the official 2025 Form 1040 (filled and flattened):
+PyMuPDF reports each boxed digit as its OWN one-character line (or, in other PDFs,
+one line "5 1 2 4 8 7 3 9 1" with spaces). No rule matched; 7 of 9 SSN digits and
+the whole routing/account numbers survived - and the verifier said EXPORT VERIFIED
+because it read the output with the same plain get_text().
+- `provider._merge_comb_runs` (separate lines) and `_close_comb_spacing` (one line)
+  rejoin >= COMB_MIN_RUN DIGITS on one baseline, same font/size, pitch 0.6-2.2x the
+  font size and EVEN within 8%. Text stays 1:1 with glyphs (only whitespace is
+  dropped, with its offset). Digits only - never glue spaced letters.
+- 8%, not 25%: 1040 dependent SSN columns are 11.8 pt apart inside a field and
+  13.6 pt at the column break (15%); 25% merged two dependents into 18 digits.
+- `verifier` appends `comb_values_text(out)` to the text it checks. Never verify a
+  saved file with plain get_text() alone.
+Tests: test_regression.py (boxed SSN replaced end to end, side-by-side fields,
+measured 1040 column break, no merge of short/uneven runs, verifier catches a
+surviving boxed SSN); each half mutation-checked.
+Open on the 1040 (held, readable, safe): dependent columns 2-4 (the row caption
+binds only the first column), PTIN typed MRN and held, ZIP held as PROBABLE.

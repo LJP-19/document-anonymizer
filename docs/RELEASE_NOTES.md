@@ -1,3 +1,20 @@
+### What changed in 0.42.3
+
+**Fixes SSNs, routing and account numbers leaking on the IRS fillable Form 1040.**
+When a return is filled in the IRS's own fillable PDF (or printed by software that
+puts one digit in each box), every digit of an SSN, routing number and account
+number sits in its own box. Earlier versions read each box as a separate one-digit
+value: on a test 2025 Form 1040, 7 of the 9 digits of each SSN and the full bank
+routing and account numbers stayed readable in the output - and the export check
+still said EXPORT VERIFIED, because it read the saved file the same broken way.
+Boxed digits are now read as one value, so they are detected and replaced; and
+the export check reads boxed fields the same way, so a boxed SSN that survives
+now fails verification.
+
+Still held for your review on a Form 1040 (left readable until you decide):
+dependents in the 2nd-4th columns, the preparer's PTIN, the ZIP code, and the
+firm name.
+
 ### What changed in 0.42.2
 
 **A labelled name the detection model mistook for a job title is pseudonymized

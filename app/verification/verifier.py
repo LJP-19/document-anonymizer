@@ -16,6 +16,7 @@ import pymupdf
 from ..detection.deterministic import financial_tokens
 from ..document.hidden import extract_hidden, residual_hidden_pii
 from ..document.pdflock import PDF_LOCK
+from ..document.provider import comb_values_text
 from ..transform.plan import TransformationPlan
 
 RED_INT = 0xFF0000
@@ -144,7 +145,10 @@ def verify(plan: TransformationPlan, output_path: str) -> VerificationReport:
 
             out_text = "\n".join(page.get_text() for page in out)
             src_text = "\n".join(page.get_text() for page in src)
-            out_norm = _normalize(out_text)
+            # Plus every comb field (one digit per box) rejoined, exactly as the
+            # analysis reads it: plain get_text() splits a boxed SSN into nine
+            # one-digit lines, and a surviving SSN passed "originals removed".
+            out_norm = _normalize(out_text + "\n" + comb_values_text(out))
 
             _check_originals_absent(report, plan, out_norm)
             _check_replacements_present(report, plan, out_norm)

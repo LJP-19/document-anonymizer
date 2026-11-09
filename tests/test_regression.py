@@ -2878,3 +2878,108 @@ def test_audit_prompt_still_fits_the_context_budget():
         f"prompt (~{rough_tokens} tokens) + output budget ({MAX_OUTPUT_TOKENS}) "
         f"must leave headroom under CONTEXT_TOKENS ({CONTEXT_TOKENS})"
     )
+
+
+# --- comb (one character per box) fields: the IRS fillable Form 1040 --------
+
+def _comb_pdf(path, digits_rows):
+    """A form whose values sit one character per box, as a filled-and-flattened
+    IRS fillable PDF prints them. Fictional values only."""
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for (label, x0, y, digits, pitch) in digits_rows:
+        page.insert_text((x0, y - 12), label, fontsize=7, fontname="hebo", color=(0.2, 0.2, 0.2))
+        for i, ch in enumerate(digits):
+            page.insert_text((x0 + i * pitch, y), ch, fontsize=10, fontname="helv", color=(0, 0, 0.5))
+    doc.save(str(path))
+    return str(path)
+
+
+def test_a_boxed_ssn_is_read_as_one_value_and_fully_replaced(tmp_path):
+    """Real 2025 Form 1040: every SSN digit was its own one-character line, the SSN
+    rule matched nothing, and 7 of 9 digits of every SSN survived - while the
+    verifier reported EXPORT VERIFIED."""
+    from app.document.provider import default_provider
+    from app.session import AnonymizationSession
+
+    src = _comb_pdf(tmp_path / "boxed.pdf", [("Your social security number", 400, 120, "512487391", 11.8)])
+    lines = [ln.text for p in default_provider().load(src).pages for ln in p.lines]
+    assert "512487391" in lines
+    s = AnonymizationSession(source_path=src)
+    s.analyse()
+    out = tmp_path / "out.pdf"
+    _apply, report = s.process(str(out))
+    assert report.passed, [c for c in report.checks if not c.passed]
+    import pymupdf
+    from app.document.provider import comb_values_text
+
+    with pymupdf.open(str(out)) as d:
+        assert "512487391" not in comb_values_text(d)
+
+
+def test_two_boxed_fields_side_by_side_stay_two_values(tmp_path):
+    """Form 1040 dependents: SSN columns 15% further apart at the column break."""
+    from app.document.provider import default_provider
+
+    src = _comb_pdf(tmp_path / "deps.pdf", [("(3) SSN", 150, 120, "604183372", 11.8)])
+    import pymupdf
+
+    d = pymupdf.open(src)
+    for i, ch in enumerate("611250498"):  # second field starts 13.6 after the last box
+        d[0].insert_text((150 + 8 * 11.8 + 13.6 + i * 11.8, 120), ch, fontsize=10, fontname="helv", color=(0, 0, 0.5))
+    d.saveIncr()
+    d.close()
+    texts = [ln.text for p in default_provider().load(src).pages for ln in p.lines]
+    assert "604183372" in texts and "611250498" in texts
+
+
+def test_spaced_words_and_line_numbers_are_not_merged_as_boxes(tmp_path):
+    from app.document.provider import default_provider
+
+    src = _comb_pdf(tmp_path / "plain.pdf", [("Lines", 60, 120, "123", 11.8)])  # too short a run
+    import pymupdf
+
+    d = pymupdf.open(src)
+    for i, ch in enumerate("1a2b"):  # uneven spacing - not a box field
+        d[0].insert_text((60 + [0, 30, 41, 90][i], 160), ch, fontsize=10, fontname="helv")
+    d.saveIncr()
+    d.close()
+    texts = [ln.text for p in default_provider().load(src).pages for ln in p.lines]
+    assert "123" not in texts and "1a2b" not in texts
+
+
+def test_the_verifier_sees_a_boxed_ssn_that_survived(tmp_path):
+    """Verify the UNCHANGED source as if it were the output: a boxed SSN that was
+    planned for removal is still there, and 'accepted originals removed' must fail."""
+    from app.session import AnonymizationSession
+    from app.verification.verifier import verify
+
+    src = _comb_pdf(tmp_path / "boxed.pdf", [("Your social security number", 400, 120, "512487391", 11.8)])
+    s = AnonymizationSession(source_path=src)
+    s.analyse()
+    plan = s.plan()
+    assert any(t.original == "512487391" for t in plan.targets)
+    report = verify(plan, src)
+    check = next(c for c in report.checks if c.name == "accepted originals removed")
+    assert not check.passed
+
+
+def test_comb_runs_split_at_the_1040_dependent_column_break():
+    """Positions measured on the real 2025 Form 1040 dependents row: boxes every
+    11.8 pt, the next dependent's field 13.6 pt on. Two runs, never one."""
+    from app.document.model import Block, Char, Line, Span
+    from app.document.provider import _even_pitch_runs, _merge_comb_runs
+
+    xs = [148.7 + 11.8 * i for i in range(9)] + [256.7 + 11.8 * i for i in range(9)]
+    assert _even_pitch_runs(xs, 10.0) == [(0, 9), (9, 18)]
+    digits = "604183372611250498"
+    blocks = []
+    for i, (x, ch) in enumerate(zip(xs, digits)):
+        c = Char(text=ch, bbox=(x, 333, x + 5, 344))
+        sp = Span(text=ch, bbox=c.bbox, font="Helvetica", size=10, color=0, chars=[c])
+        ln = Line(page_no=0, block_no=i, line_no=0, spans=[sp], text=ch, offsets=[c], bbox=c.bbox)
+        blocks.append(Block(page_no=0, block_no=i, lines=[ln], bbox=c.bbox))
+    texts = [ln.text for b in _merge_comb_runs(blocks) for ln in b.lines]
+    assert texts == ["604183372", "611250498"]

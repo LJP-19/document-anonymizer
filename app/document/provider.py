@@ -72,6 +72,7 @@ class NativePdfTextProvider(DocumentTextProvider):
                     )
                 )
 
+        blocks = _merge_comb_runs(blocks)
         needs_ocr, reason = self._assess_ocr(page, char_count)
         built = Page(
             number=index,
@@ -130,6 +131,7 @@ class NativePdfTextProvider(DocumentTextProvider):
             return None
         text = "".join(text_parts)
         assert len(text) == len(offsets), "offset map desynchronised from line text"
+        spans, text, offsets = _close_comb_spacing(spans, text, offsets)
         return Line(
             page_no=page_no,
             block_no=b_no,
@@ -187,3 +189,154 @@ class FutureOcrTextProvider(DocumentTextProvider):
 
 def default_provider() -> DocumentTextProvider:
     return NativePdfTextProvider()
+
+
+# --- comb fields ------------------------------------------------------------
+#: Shortest run of boxed single characters treated as one value (an IP PIN has 6,
+#: an SSN 9, a routing number 9, an account number up to 17).
+COMB_MIN_RUN = 4
+
+
+def _comb_char(line: Line) -> bool:
+    # Digits only: boxed letters ("S I N G L E" in a heading) must never be glued.
+    return len(line.spans) == 1 and len(line.text) == 1 and line.text.isdigit()
+
+
+def _even_pitch_runs(xs: list[float], size: float) -> list[tuple[int, int]]:
+    """(start, end) index ranges of >= COMB_MIN_RUN positions at an even pitch."""
+    runs, start = [], 0
+    for i in range(1, len(xs) + 1):
+        ok = i < len(xs)
+        if ok:
+            pitch = xs[i] - xs[i - 1]
+            ok = 0.6 * size <= pitch <= 2.2 * size
+            if ok and i - start >= 2:
+                first = xs[start + 1] - xs[start]
+                ok = abs(pitch - first) <= 0.08 * first
+        if not ok:
+            if i - start >= COMB_MIN_RUN:
+                runs.append((start, i))
+            start = i
+    return runs
+
+
+def _close_comb_spacing(spans, text, offsets):
+    """Within ONE line, drop the spaces between boxed digits ("5 1 2 4 8 7 3 9 1").
+
+    Some PDFs put a comb field on one line with a space glyph (or our synthetic
+    gap separator) between the boxes. The digits keep their own characters and
+    rectangles; only whitespace between digits of an evenly spaced run is
+    removed, together with its offset entry, so text and offsets stay 1:1.
+    """
+    digit_spans = [i for i, sp in enumerate(spans) if len(sp.text) == 1 and sp.text.isdigit()]
+    if len(digit_spans) < COMB_MIN_RUN:
+        return spans, text, offsets
+    # consecutive digit spans separated only by whitespace spans
+    groups, cur = [], [digit_spans[0]]
+    for a, b in zip(digit_spans, digit_spans[1:]):
+        if all(not spans[k].text.strip() for k in range(a + 1, b)):
+            cur.append(b)
+        else:
+            groups.append(cur)
+            cur = [b]
+    groups.append(cur)
+    drop_spans: set[int] = set()
+    drop_chars: set[int] = set()
+    for g in groups:
+        size = spans[g[0]].size
+        xs = [spans[i].chars[0].bbox[0] for i in g]
+        for s0, s1 in _even_pitch_runs(xs, size):
+            run = g[s0:s1]
+            first_char = spans[run[0]].chars[0]
+            last_char = spans[run[-1]].chars[0]
+            lo = next(i for i, c in enumerate(offsets) if c is first_char)
+            hi = next(i for i, c in enumerate(offsets) if c is last_char)
+            drop_chars.update(i for i in range(lo, hi) if text[i].isspace())
+            drop_spans.update(k for k in range(run[0] + 1, run[-1]) if not spans[k].text.strip())
+    if not drop_chars:
+        return spans, text, offsets
+    keep = [i for i in range(len(text)) if i not in drop_chars]
+    return ([sp for k, sp in enumerate(spans) if k not in drop_spans],
+            "".join(text[i] for i in keep), [offsets[i] for i in keep])
+
+
+def _merge_comb_runs(blocks: list[Block]) -> list[Block]:
+    """Rejoin a comb field - one character per printed box - into ONE line.
+
+    A filled-and-flattened IRS fillable PDF (Form 1040 SSN, routing and account
+    boxes) puts every digit in its own box; PyMuPDF then reports each digit as a
+    separate one-character LINE in its own block. Nothing downstream could see
+    "512487391": the SSN rule matched nothing, a model typed two stray digits, and
+    the other seven digits of every SSN survived into the output (found on the real
+    2025 Form 1040). A run is: >= COMB_MIN_RUN single alphanumeric characters on
+    one baseline, same font and size, at an even pitch (within 8%) of 0.6-2.2x the font size: two SSN fields side
+    by side (Form 1040 dependents) sit 15% further apart at the column break.
+    The merged text has no separators, so it stays strictly 1:1 with the glyphs and
+    every character keeps its own rectangle.
+    """
+    singles = [ln for b in blocks for ln in b.lines if _comb_char(ln)]
+    if len(singles) < COMB_MIN_RUN:
+        return blocks
+    rows: dict[tuple, list[Line]] = {}
+    for ln in singles:
+        key = (round(ln.bbox[3]), ln.spans[0].font, round(ln.spans[0].size, 1))
+        rows.setdefault(key, []).append(ln)
+
+    merged: dict[int, Line] = {}   # id(first line) -> merged line
+    absorbed: set[int] = set()
+    for (_y, _font, size), row in rows.items():
+        row.sort(key=lambda ln: ln.bbox[0])
+        run = [row[0]]
+        runs: list[list[Line]] = []
+        for prev, cur in zip(row, row[1:]):
+            pitch = cur.bbox[0] - prev.bbox[0]
+            ok = 0.6 * size <= pitch <= 2.2 * size
+            if ok and len(run) >= 2:
+                first = run[1].bbox[0] - run[0].bbox[0]
+                ok = abs(pitch - first) <= 0.08 * first  # boxes are evenly spaced; the next field is not
+            if ok:
+                run.append(cur)
+            else:
+                runs.append(run)
+                run = [cur]
+        runs.append(run)
+        for r in runs:
+            if len(r) < COMB_MIN_RUN:
+                continue
+            head = r[0]
+            line = Line(
+                page_no=head.page_no, block_no=head.block_no, line_no=head.line_no,
+                spans=[s for ln in r for s in ln.spans],
+                text="".join(ln.text for ln in r),
+                offsets=[c for ln in r for c in ln.offsets],
+                bbox=union(ln.bbox for ln in r),
+            )
+            merged[id(head)] = line
+            absorbed.update(id(ln) for ln in r[1:])
+
+    if not merged:
+        return blocks
+    out: list[Block] = []
+    for b in blocks:
+        lines = [merged.get(id(ln), ln) for ln in b.lines if id(ln) not in absorbed]
+        if lines:
+            out.append(Block(page_no=b.page_no, block_no=b.block_no, lines=lines,
+                             bbox=union(ln.bbox for ln in lines) or b.bbox))
+    return out
+
+
+def comb_values_text(doc: pymupdf.Document) -> str:
+    """The rejoined comb-field values of an OPEN document, one per line.
+
+    The verifier reads saved files with plain get_text(), which splits a boxed
+    SSN into nine one-digit lines - so a surviving SSN was invisible to the
+    "originals removed" check and the file was reported EXPORT VERIFIED. It
+    appends this text to see what the analysis sees.
+    """
+    provider = NativePdfTextProvider()
+    out: list[str] = []
+    for i in range(doc.page_count):
+        for line in provider._build_page(doc, i).lines:
+            if len(line.spans) >= COMB_MIN_RUN and all(len(s.text) == 1 for s in line.spans):
+                out.append(line.text)
+    return "\n".join(out)
