@@ -175,6 +175,9 @@ def generate(pii_type: PiiType, value: str, scope: str = "document") -> str:
     if pii_type is PiiType.ITIN:
         return f"9{fake.numerify('##')}-7{fake.numerify('#')}-{fake.numerify('####')}"
 
+    if pii_type is PiiType.TIN and re.fullmatch(r"P\d{8}", value.strip()):
+        return f"P{fake.numerify('########')}"  # a PTIN keeps its shape
+
     if pii_type in (PiiType.EIN, PiiType.TIN, PiiType.STATE_TAX_ID):
         return f"{fake.numerify('##')}-{fake.numerify('#######')}"
 
@@ -183,7 +186,7 @@ def generate(pii_type: PiiType, value: str, scope: str = "document") -> str:
         return f"{local}@example.com"
 
     if pii_type in (PiiType.PHONE, PiiType.FAX):
-        return _mask_preserving_shape(re.sub(r"\d", "5", value), seed)
+        return _valid_nanp(_mask_preserving_shape(re.sub(r"\d", "5", value), seed))
 
     if pii_type is PiiType.DOB:
         d = fake.date_of_birth(minimum_age=22, maximum_age=80)
@@ -271,6 +274,23 @@ def _initials_like(value: str, seed: int) -> str:
     digest = hashlib.sha256(str(seed).encode()).digest()
     out = "".join(letters[digest[i % len(digest)] % len(letters)] for i in range(len(value)))
     return out if value.isupper() else out.capitalize()
+
+
+def _valid_nanp(phone: str) -> str:
+    """A US/Canada number never has an area code or exchange starting with 0 or 1:
+    "(510) 555-0142" became "(067) 629-6694", which reads as obviously fake and is
+    not a phone number. Only a 10-digit (or 1 + 10-digit) number is adjusted, in
+    place, keeping every separator."""
+    pos = [i for i, ch in enumerate(phone) if ch.isdigit()]
+    if len(pos) == 11 and phone[pos[0]] == "1":
+        pos = pos[1:]
+    if len(pos) != 10:
+        return phone
+    chars = list(phone)
+    for i in (pos[0], pos[3]):
+        if chars[i] in "01":
+            chars[i] = str(int(chars[i]) + 2 + (i % 6))  # 2-9, deterministic
+    return "".join(chars)
 
 
 def _digits_like(value: str, fake: Faker) -> str:

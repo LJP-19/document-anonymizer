@@ -2983,3 +2983,116 @@ def test_comb_runs_split_at_the_1040_dependent_column_break():
         blocks.append(Block(page_no=0, block_no=i, lines=[ln], bbox=c.bbox))
     texts = [ln.text for b in _merge_comb_runs(blocks) for ln in b.lines]
     assert texts == ["604183372", "611250498"]
+
+
+def test_a_confirmed_full_name_a_model_typed_as_a_company_is_the_person():
+    """macOS CI (0.42.3): "Torvin Quell's account" stayed readable - the arm64 model
+    build typed the confirmed person's full name as an organisation (always held).
+    Built by hand so the test does not depend on which model build is installed."""
+    from app.detection.engine import _retype_known_name_components
+    from app.detection.types import Candidate, Evidence, PiiType, Source
+    from tests.test_authorization import _line
+
+    def cand(text, pii, src, gid=None):
+        ln = _line(text)
+        return Candidate(pii_type=pii, text=text, page_no=0, rect=ln.bbox, line=ln, start=0, end=len(text),
+                         confidence=0.8, source=src, evidence=[Evidence(src, "x", 0.5)], group_id=gid)
+
+    out = _retype_known_name_components([
+        cand("Torvin Quell", PiiType.PERSON, Source.GROUP, "g1"),
+        cand("Torvin Quell's", PiiType.ORG_PRIVATE, Source.NER),
+        cand("Quell Holdings LLC", PiiType.ORG_PRIVATE, Source.NER),
+    ])
+    assert out[1].pii_type is PiiType.PERSON
+    assert out[2].pii_type is PiiType.ORG_PRIVATE  # a real company stays a company
+
+
+def test_phone_pseudonyms_are_valid_us_numbers():
+    """'(510) 555-0142' became '(067) 629-6694': no area code or exchange starts 0/1."""
+    from app.pseudonymization.generator import _valid_nanp
+
+    assert _valid_nanp("(067) 629-6694")[1] not in "01"
+    assert _valid_nanp("(510) 155-0142")[6] not in "01"
+    assert _valid_nanp("1-013-555-0100").startswith("1-")
+    assert _valid_nanp("555 0142") == "555 0142"  # not a full number: untouched
+
+
+def test_model_only_values_with_impossible_shapes_are_dropped():
+    """Form 1040 line numbers '1a', '24' as zip codes; 'Are blind' as a username."""
+    from app.detection.engine import _drop_impossible_model_values
+    from app.detection.types import Candidate, Evidence, PiiType, Source
+    from tests.test_authorization import _line
+
+    def cand(text, pii, src=Source.NER, extra=()):
+        ln = _line(text)
+        return Candidate(pii_type=pii, text=text, page_no=0, rect=ln.bbox, line=ln, start=0, end=len(text),
+                         confidence=0.6, source=src,
+                         evidence=[Evidence(src, "m", 0.5)] + [Evidence(s, "e", 0.5) for s in extra])
+
+    kept = _drop_impossible_model_values([
+        cand("1a", PiiType.POSTAL_CODE), cand("24", PiiType.POSTAL_CODE),
+        cand("Are blind", PiiType.USERNAME), cand("94539", PiiType.POSTAL_CODE),
+        cand("K1A 0B1", PiiType.POSTAL_CODE), cand("jdoe_77", PiiType.USERNAME),
+        cand("tito bong", PiiType.USERNAME, extra=(Source.AUDIT,)),  # other evidence: kept
+    ])
+    assert [c.text for c in kept] == ["94539", "K1A 0B1", "jdoe_77", "tito bong"]
+
+
+def test_occupations_and_date_placeholders_are_not_name_shaped_people():
+    from app.detection.heuristics import _scan_line
+    from tests.test_authorization import _line
+
+    assert _scan_line(_line("Software Architect"), []) == []
+    assert _scan_line(_line("Deceased MM DD YYYY"), []) == []
+    assert _scan_line(_line("Marcus Feldman"), [])  # a real name still is
+
+
+@pytest.mark.parametrize("caption,expected", [
+    ("3 Social security wages", None), ("5 Medicare wages and tips", None),
+    ("4 Social security tax withheld", None), ("10 Dependent care benefits", None),
+    ("Copy A—For Social Security Administration", None),
+    ("Federal tax ID", "EIN"), ("PTIN", "TIN"), ("Employer's state ID number", "STATE_TAX_ID"),
+    ("a Employee's social security number", "SSN"), ("Ordering provider", "PERSON"),
+    ("Employee", "PERSON"), ("Employee ID", "EMPLOYEE_ID"),
+    ("Home address (number and street). If you have a P.O. box, see instructions.", "ADDRESS"),
+    ("Name of payer", "PERSON"), ("Spouse's occupation", None),
+])
+def test_captions_are_typed_by_their_head_noun_across_both_lists(caption, expected):
+    """The term that ends LAST decides; whole words only ('pay' in 'payer' is not it)."""
+    from app.detection.deterministic import load_rules
+    from app.detection.labels import _match_label
+
+    got = _match_label(caption, load_rules())
+    if expected is None:
+        assert got is not None and got[1], f"{caption!r} should be a non-identity caption, got {got}"
+    else:
+        assert got and [t.name for t in got[0]] == [expected], f"{caption!r} -> {got}"
+
+
+def test_a_cover_letter_address_made_of_confirmed_address_words_is_authorized():
+    from app.decisions.authorization import assess, confirmed_name_words
+    from app.detection.types import PiiType, Source
+    from tests.test_authorization import cand
+
+    street = cand("4821 MAPLEWOOD CMN", pii_type=PiiType.STREET, source=Source.REGEX, label_confirmed=True)
+    city = cand("BRIARWOOD", pii_type=PiiType.ADDRESS, source=Source.NER, label_confirmed=True)
+    zipc = cand("94512", pii_type=PiiType.POSTAL_CODE, source=Source.REGEX, label_confirmed=True)
+    words = confirmed_name_words([street, city, zipc])
+    assert assess(cand("BRIARWOOD CA 94512", pii_type=PiiType.ADDRESS, source=Source.REGEX), words).eligible
+    assert assess(cand("4821 MAPLEWOOD CMN", pii_type=PiiType.STREET, source=Source.REGEX), words).eligible
+    # one confirmed word is not enough; an unconfirmed word blocks it
+    assert not assess(cand("BRIARWOOD CA", pii_type=PiiType.ADDRESS, source=Source.REGEX), words).eligible
+    assert not assess(cand("12 OAK ST BRIARWOOD", pii_type=PiiType.ADDRESS, source=Source.REGEX), words).eligible
+
+
+def test_a_confirmed_persons_name_settles_only_detector_doubt():
+    from app.decisions.authorization import assess, confirmed_name_words
+    from app.detection.types import Source
+    from tests.test_authorization import cand
+
+    words = confirmed_name_words([cand("Ines Okonkwo-Brandt", source=Source.GROUP, label_confirmed=True)])
+    low = cand("Okonkwo-Brandt", source=Source.NER, needs_review=True, review_reason="low model confidence")
+    assert assess(low, words).eligible
+    ai = cand("Okonkwo-Brandt", source=Source.NER, needs_review=True,
+              review_reason="low model confidence; the AI review objected: not personal")
+    assert not assess(ai, words).eligible

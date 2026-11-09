@@ -1,3 +1,31 @@
+### What changed in 0.42.4
+
+Tested on the official IRS Form 1040 and Form W-2, filled with an invented return.
+
+**Form W-2 wage and tax amounts are never changed.** "3 Social security wages" and
+"5 Medicare wages and tips" were read as SSN and Medicare-number fields, so their
+amounts were replaced. A box caption is now typed by its last word - "wages",
+"withheld", "tips", "benefits" describe amounts.
+
+**More of every return is replaced automatically** (all of it on the test 1040 and
+W-2, except the firm/employer name, which is always your decision):
+* dependents 2-4 on the 1040 (only the first dependent column was recognised);
+* the ZIP and State boxes when the value is centred in its box;
+* the W-2 employee address (its caption is printed under the box);
+* the preparer's PTIN (it was guessed to be a medical record number);
+* the same address repeated on a cover letter, the IRS name control on the payment
+  voucher, and a confirmed person's surname in a later statement;
+* names and IDs in a table under "Employee | Employee ID" style headers;
+* "Ordering provider: Dr. ..." and similar medical roles.
+
+**Fewer false alarms in the review list:** form line numbers ("1a", "24"), "Are
+blind", "Software Architect" and "Deceased MM DD YYYY" are no longer proposed.
+
+**Replacement phone numbers are valid US numbers** (no area code starting with 0/1).
+
+Measured on the fictional benchmark returns: recall 84.5% -> 99.1%, with zero form
+or amount words changed (precision 100%).
+
 ### What changed in 0.42.3
 
 **Fixes SSNs, routing and account numbers leaking on the IRS fillable Form 1040.**

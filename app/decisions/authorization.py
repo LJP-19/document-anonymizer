@@ -241,14 +241,48 @@ def _name_words(text: str) -> list[str]:
     return _name_tokens(text)
 
 
+_ADDRESS_FAMILY = {PiiType.ADDRESS, PiiType.STREET, PiiType.CITY_STATE, PiiType.POSTAL_CODE}
+_ADDR_PREFIX = "addr:"
+
+
+def _address_tokens(text: str) -> list[str]:
+    return [t for t in re.split(r"[^0-9A-Za-z]+", text.lower()) if t]
+
+
 def confirmed_name_words(candidates: Iterable[Candidate]) -> set:
-    """Name words of people a LABEL confirmed (and who are not held)."""
+    """Name words of people a LABEL confirmed (and who are not held), plus - under
+    the "addr:" prefix - the words of address fields a label confirmed."""
     words: set = set()
     for c in candidates:
-        if (c.pii_type is PiiType.PERSON and getattr(c, "label_confirmed", False)
-                and not c.needs_review and not getattr(c, "ambiguous", False)):
+        if not (getattr(c, "label_confirmed", False) and not c.needs_review
+                and not getattr(c, "ambiguous", False)):
+            continue
+        if c.pii_type is PiiType.PERSON:
             words.update(_name_words(c.text))
+        elif c.pii_type in _ADDRESS_FAMILY:
+            words.update(_ADDR_PREFIX + t for t in _address_tokens(c.text))
     return words
+
+
+def _made_of_confirmed_address(c: Candidate, confirmed_words: set) -> bool:
+    """A mailing block on a cover letter repeats the address a labelled field
+    confirmed elsewhere ("4821 MAPLEWOOD CMN / BRIARWOOD CA 94512"): every word is
+    a confirmed address word or a state code, and at least two are confirmed."""
+    if c.pii_type not in _ADDRESS_FAMILY or c.source is Source.MANUAL:
+        return False
+    from ..detection.entities_pass import _STATE_CODES
+
+    tokens = _address_tokens(c.text)
+    hits = [t for t in tokens if _ADDR_PREFIX + t in confirmed_words]
+    rest = [t for t in tokens if _ADDR_PREFIX + t not in confirmed_words]
+    return len(hits) >= 2 and all(t in _STATE_CODES for t in rest)
+
+
+def _made_of_confirmed_names(c: Candidate, confirmed_words: set) -> bool:
+    if c.pii_type is not PiiType.PERSON or not confirmed_words or c.source is Source.REGEX:
+        return False
+    words = _name_words(c.text)
+    return bool(words) and all(w in confirmed_words for w in words)
 
 
 def assess(c: Candidate, confirmed_words: Optional[set] = None) -> Assessment:
@@ -259,7 +293,23 @@ def assess(c: Candidate, confirmed_words: Optional[set] = None) -> Assessment:
         exact_entity = (c.source is Source.COVERAGE and not getattr(c, "ambiguous", False)
                         and any(e.detail.startswith("same value as an entity") for e in c.evidence))
         parts = [p.strip().lower() for p in (c.review_reason or "").split(";") if p.strip()]
-        if not (exact_entity and parts and all(p.startswith(SOFT_PROTECTION_DOUBTS) for p in parts)):
+        # A detector's doubt about its own score/type ("low model confidence") is
+        # settled when the value is made only of a CONFIRMED person's name words -
+        # the label vouched for the person; GLiNER's score for one occurrence adds
+        # nothing ("Mr. Okonkwo-Brandt" in a statement). Never an AI objection,
+        # a validator failure or ambiguity: those are not detector doubts.
+        detector_doubt_only = bool(parts) and all(
+            any(p.startswith(d) for d in LABEL_RESOLVABLE_DOUBTS) for p in parts)
+        settled = detector_doubt_only and confirmed_words and _made_of_confirmed_names(c, confirmed_words)
+        # An IRS name control (first 4 letters of the surname on a scanline) is
+        # only ever produced from a subject a label confirmed; its flag says where
+        # it came from, it is not doubt. Left readable, "QUIL" beside a replaced
+        # QUILLFEATHER re-identifies the filer.
+        if (not settled and c.source is Source.COVERAGE and parts
+                and any(e.detail.startswith("name control (") for e in c.evidence)
+                and all(p.startswith("the first letters of a known surname") for p in parts)):
+            settled = True
+        if not settled and not (exact_entity and parts and all(p.startswith(SOFT_PROTECTION_DOUBTS) for p in parts)):
             why = (c.review_reason or "flagged for review").strip()
             return Assessment(False, f"flagged for review: {why}")
     if getattr(c, "ambiguous", False):
@@ -278,10 +328,10 @@ def assess(c: Candidate, confirmed_words: Optional[set] = None) -> Assessment:
     # A reliable occurrence of an entity a LABEL confirmed is confirmed by that
     # label, not by the model's score for this occurrence - checked before the
     # model-adjudication veto. (needs_review and ambiguity above still veto.)
-    if c.pii_type is PiiType.PERSON and confirmed_words and c.source is not Source.REGEX:
-        words = _name_words(c.text)
-        if words and all(w in confirmed_words for w in words):
-            return Assessment(True, "made only of a label-confirmed person's name words")
+    if confirmed_words and _made_of_confirmed_names(c, confirmed_words):
+        return Assessment(True, "made only of a label-confirmed person's name words")
+    if confirmed_words and _made_of_confirmed_address(c, confirmed_words):
+        return Assessment(True, "made only of a label-confirmed address's words")
     adjudication = getattr(c, "adjudication", "") or ""
     if adjudication in ("UNRESOLVED", "PROBABLE"):
         return Assessment(False, f"evidence is {adjudication.lower()}, not confirmed")

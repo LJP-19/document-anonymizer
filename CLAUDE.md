@@ -2671,3 +2671,34 @@ measured 1040 column break, no merge of short/uneven runs, verifier catches a
 surviving boxed SSN); each half mutation-checked.
 Open on the 1040 (held, readable, safe): dependent columns 2-4 (the row caption
 binds only the first column), PTIN typed MRN and held, ZIP held as PROBABLE.
+
+## 0.42.4: what the official 1040 and W-2 exposed (demo/f1040, demo/w2, tests/test_irs_forms.py)
+
+- **Captions are typed by the head noun across BOTH lists** (`labels._financial_head_end`):
+  "3 Social security wages" / "5 Medicare wages and tips" were SSN / MEDICARE_ID labels, the
+  identity-field waiver lifted the money protection and W-2 AMOUNTS WERE REPLACED. Only the
+  financial terms take part (structural "box" in "If you have a P.O. box, see instructions"
+  must not turn an address caption non-PII); whole words only ("pay" in "payer"). The old
+  dominance rule still wins unless the identity term ends LATER ("Federal tax ID" = EIN).
+- **Row captions bind every cell of their row** (`groups._row_continuation`): 1040
+  "(1) First name | dep 1 | dep 2 ..." bound only dependent 1. Same style as the first cell,
+  no label/form text between, gap <= ROW_CELL_MAX_GAP.
+- A value CENTRED under its caption binds (ZIP/State); a caption printed UNDER its box binds
+  the lines above as a fallback (`_values_above_caption`, W-2 box f).
+- Never a value: a box caption "15  State" (`_BOX_CAPTION`), text in the label's own font
+  family AND colour (`_same_template`, "For Official Use Only"), a vertical watermark (Case C
+  height guard). Each was found binding on the W-2.
+- **Separate-line header rows** (each header its own Line) type table columns, but may only
+  CONFIRM an agreeing type within 8 rows, never retype: on 1040-style pages side-by-side field
+  captions look identical, and retyping by them changed SSNs, addresses and an amount (caught
+  by the forms benchmark: recall fell to 0.72 before this guard). Column evidence weighs 0.6.
+- Authorization (`assess`): an address made only of label-confirmed address words (+ state
+  codes, >= 2 confirmed) is authorized; a confirmed person's name settles a DETECTOR doubt
+  (never an AI objection); a name control's own flag is not doubt.
+- `_drop_impossible_model_values`: GLiNER-only postal codes under 4 chars, usernames with
+  spaces - only when NO other source backs the span (an AI finding merged in keeps it).
+- `_retype_known_name_components` also retypes a multi-word span made only of a confirmed
+  person's name words (macOS CI: the arm64 model typed "Torvin Quell's account" ORG).
+- Forms benchmark (benchmark/run_forms_benchmark.py, GLiNER on): R 0.845 -> 0.991, P 1.000.
+  When comparing against an old checkout with --app-root, copy resources/models/gliner-pii
+  into it FIRST - without it the baseline silently runs without GLiNER.

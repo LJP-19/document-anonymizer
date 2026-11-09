@@ -1,0 +1,109 @@
+"""The official IRS 2025 Form 1040 and 2026 Form W-2, filled with an INVENTED return
+(demo/f1040, demo/w2; rebuild with the make_*.py scripts there) and run through the
+real pipeline. Every value below is fictional.
+
+Each assertion is a bug found by running these forms (0.42.3 / 0.42.4):
+boxed SSN digits read one per line, dependents 2-4 never bound, a centred ZIP,
+the PTIN typed as a medical record number, W-2 wage boxes typed SSN / Medicare ID
+(their amounts were REPLACED), a W-2 caption printed under its box, a vertical
+watermark and the template's own text bound as values.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pymupdf
+import pytest
+
+from app.document.provider import comb_values_text
+from app.session import AnonymizationSession
+
+ROOT = Path(__file__).resolve().parents[1]
+F1040 = ROOT / "demo" / "f1040" / "Feldman_Marcus_2025_Form1040.pdf"
+W2 = ROOT / "demo" / "w2" / "Feldman_Marcus_W2.pdf"
+
+
+def _process(src: Path, tmp_path: Path):
+    s = AnonymizationSession(source_path=str(src))
+    s.analyse()
+    s.decisions.approve_auto_eligible(s.candidates)
+    out = tmp_path / "out.pdf"
+    _apply, report = s.process(str(out))
+    with pymupdf.open(str(out)) as d:
+        text = "\n".join(p.get_text() for p in d) + "\n" + comb_values_text(d)
+    return s, report, " ".join(text.split())
+
+
+@pytest.fixture(scope="module")
+def f1040(tmp_path_factory, monkeypatch_module):
+    return _process(F1040, tmp_path_factory.mktemp("f1040"))
+
+
+@pytest.fixture(scope="module")
+def w2(tmp_path_factory, monkeypatch_module):
+    return _process(W2, tmp_path_factory.mktemp("w2"))
+
+
+@pytest.fixture(scope="module")
+def monkeypatch_module():
+    mp = pytest.MonkeyPatch()
+    mp.setenv("DOCANON_LLM", "0")
+    yield mp
+    mp.undo()
+
+
+IDENTITY_1040 = [
+    "512487391", "528610943", "604183372", "611250498",          # all four SSNs (boxed)
+    "121000358", "4471982036",                                   # routing / account (boxed)
+    "Marcus T", "Elena R", "Feldman", "Sofia", "Lucas",          # filers + dependents 1 AND 2
+    "4817 Larkspur Ridge Dr", "Fremont", "94539",                # address incl. centred ZIP
+    "(510) 555-0142", "mfeldman.home@example.com",
+    "Dana K. Whitfield", "P01234567", "84-3127755",              # preparer, PTIN, firm EIN
+    "2200 Mission College Blvd", "Santa Clara, CA 95054",
+]
+
+
+def test_form_1040_every_identity_value_is_replaced(f1040):
+    _s, report, text = f1040
+    assert report.passed, [c for c in report.checks if not c.passed]
+    left = [v for v in IDENTITY_1040 if v in text]
+    assert not left, f"identity left readable on the 1040: {left}"
+
+
+def test_form_1040_keeps_amounts_labels_and_state(f1040):
+    _s, _report, text = f1040
+    for keep in ["612,450", "811,482", "148,920", "Your social security number",
+                 "Dependent 2", "Routing number", "Software Architect", "Physician"]:
+        assert keep in text, keep
+
+
+def test_form_1040_holds_only_the_firm_name(f1040):
+    s, _report, _text = f1040
+    held = {c.text for c in s.decisions.awaiting_review(s.candidates)}
+    assert held <= {"Whitfield Tax Advisors LLC"}, held
+
+
+IDENTITY_W2 = ["512-48-7391", "84-3127755", "Marcus T", "Feldman", "1450 Charleston Rd",
+               "Mountain View, CA 94043", "4817 Larkspur Ridge Dr", "Fremont, CA 94539", "113-4482-9"]
+
+
+def test_w2_every_identity_value_is_replaced(w2):
+    _s, report, text = w2
+    assert report.passed, [c for c in report.checks if not c.passed]
+    left = [v for v in IDENTITY_W2 if v in text]
+    assert not left, f"identity left readable on the W-2: {left}"
+
+
+def test_w2_wage_and_tax_amounts_are_never_touched(w2):
+    """Boxes 1-6 and 16-17: 'Social security wages' / 'Medicare wages and tips' were
+    typed SSN / Medicare ID and their amounts replaced."""
+    _s, _report, text = w2
+    for amount in ["612450.00", "148920.00", "176100.00", "10918.20", "12592.53", "58210.44"]:
+        assert amount in text, amount
+
+
+def test_w2_form_text_is_never_a_value(w2):
+    _s, _report, text = w2
+    for keep in ["For Informational Purposes", "For Official Use Only", "15 State",
+                 "Employee's social security number"]:
+        assert keep.replace("'", "’") in text or keep in text, keep

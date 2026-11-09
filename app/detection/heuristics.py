@@ -375,6 +375,18 @@ def detect_joint_names(line: Line) -> list[Candidate]:
     return out
 
 
+#: Occupation and status words. Kept to words that are not also common surnames
+#: (no Baker, Mason, Farmer, Driver): this only stops the name-SHAPE heuristic,
+#: which has no other evidence.
+NOT_NAME_WORDS = frozenset("""
+architect physician engineer developer accountant attorney lawyer consultant analyst
+teacher professor nurse dentist pharmacist surgeon student retired retiree unemployed
+self-employed homemaker manager director executive president officer assistant
+technician administrator programmer scientist researcher designer specialist
+""".split())
+DATE_PLACEHOLDERS = frozenset({"mm", "dd", "yy", "yyyy", "mm/dd/yyyy"})
+
+
 def _scan_line(line: Line, on_line: list[Candidate]) -> list[Candidate]:
     text = line.text
     results: list[Candidate] = []
@@ -387,6 +399,11 @@ def _scan_line(line: Line, on_line: list[Candidate]) -> list[Candidate]:
 
     segment = text[start:end]
     is_name, confidence = looks_like_person(segment)
+    words = {w.strip(".,:;()").lower() for w in segment.split()}
+    if words & (NOT_NAME_WORDS | DATE_PLACEHOLDERS):
+        # Form 1040: "Software Architect" (an occupation box) and the template's
+        # own "Deceased MM / DD / YYYY" were proposed as people by shape alone.
+        return results
     # A single capitalised word standing alone is NOT treated as a name. That
     # rule found the occasional lone surname and misread a great deal of a form
     # besides - headings, captions, single-word answers. Token-level name

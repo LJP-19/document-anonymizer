@@ -93,6 +93,8 @@ def build_groups(
             form_styles=styles,
         )
         if not value_lines and inline_span is None:
+            value_lines = _values_above_caption(label, lines_by_page, label_keys, claimed, styles)
+        if not value_lines and inline_span is None:
             continue
 
         group = LogicalFieldGroup(
@@ -118,7 +120,102 @@ def build_groups(
 
         groups.append(group)
 
+        # A ROW caption beside a table's first cell names every cell on its row:
+        # Form 1040 "(1) First name | Dependent 1 | Dependent 2 | ...". Only the
+        # nearest cell was bound, so dependents 2-4 waited for review with their
+        # SSNs readable.
+        for k, cell in enumerate(_row_continuation(label, value_lines, inline_span, lines_by_page,
+                                                   label_keys, claimed, styles)):
+            claimed.add(cell.key())
+            cell_group = LogicalFieldGroup(
+                group_id=f"g{idx}c{k + 1}", label=label, value_lines=[cell],
+                expected_types=list(label.expected_types),
+            )
+            start, end = _trimmed_span(cell)
+            if start is not None and _eligible(label, cell.text[start:end]):
+                extra.extend(_cover_span(cell, start, end, cell_group, candidates))
+            groups.append(cell_group)
+
     return groups, labels, extra
+
+
+def _values_above_caption(label, lines_by_page, label_keys, claimed, styles):
+    """A caption printed at the BOTTOM of its box, under the value: W-2 box f
+    "Employee's address and ZIP code" sits below the address it names, so the
+    address was never bound and waited for review. Fallback only (nothing was
+    found beneath the caption): the unclaimed, non-label lines directly above
+    it in its own column, nearest first, up to the field's line limit. A label,
+    another field's value or the form's own text ends the search.
+    """
+    from .layout_style import in_form_style
+
+    if label.unknown or not label.expected_types:
+        return []
+    line = label.line
+    if label.start > 2:
+        return []  # a caption that does not start its line is a row caption, not a box caption
+    x0 = label.rect[0] if label.rect else line.bbox[0]
+    cap = NAME_LIKE_MAX_LINES.get(label.expected_types[0] if len(label.expected_types) == 1 else None,
+                                  MAX_STACKED_LINES)
+    above = sorted(
+        (o for o in lines_by_page.get(line.page_no, [])
+         if o is not line and o.bbox[3] <= line.bbox[1] + 0.5 and abs(o.bbox[0] - x0) <= LEFT_EDGE_TOLERANCE
+         and o.text.strip()),
+        key=lambda o: -o.bbox[3],
+    )
+    found: list[Line] = []
+    for o in above:
+        if len(found) >= cap:
+            break
+        if (o.key() in label_keys or o.key() in claimed or _symbol_font(o)
+                or (styles and in_form_style(o, styles)) or _OWN_LABEL.match(o.text)
+                or _BOX_CAPTION.match(o.text) or _same_template(o, line)
+                or _is_pure_financial(o.text) or MONEY_RE.search(o.text)):
+            break
+        if found and found[-1].bbox[1] - o.bbox[3] > LINE_GAP_FACTOR * max(o.height, 1.0):
+            break  # values of one field sit together
+        found.append(o)
+    return list(reversed(found))
+
+
+#: Furthest gap between two cells of one table row (Form 1040 dependents: 9 pt
+#: between SSN boxes, 92 pt between short names in 108 pt columns).
+ROW_CELL_MAX_GAP = 120.0
+
+
+def _row_continuation(label, value_lines, inline_span, lines_by_page, label_keys, claimed, styles):
+    """The further cells of a row whose caption bound its FIRST cell (Case C).
+
+    A cell continues the row when it is on the same row, to the right, set in the
+    SAME style as the first cell (a filled value, not the form), is not itself a
+    label or another field's value, and follows the previous cell closely. A label
+    or form-styled text between cells ends the row.
+    """
+    from .layout_style import in_form_style, line_style
+
+    if inline_span is not None or len(value_lines) != 1:
+        return []
+    first = value_lines[0]
+    line = label.line
+    mid = (line.bbox[1] + line.bbox[3]) / 2
+    if not (first.bbox[1] <= mid <= first.bbox[3]) or first.bbox[0] < (label.rect or line.bbox)[2]:
+        return []  # stacked underneath, not a row
+    style = line_style(first)
+    row = sorted(
+        (o for o in lines_by_page.get(line.page_no, [])
+         if o is not first and o.bbox[0] > first.bbox[0] and o.bbox[1] <= mid <= o.bbox[3]
+         and o.text.strip()),
+        key=lambda o: o.bbox[0],
+    )
+    cells, prev = [], first
+    for o in row:
+        if (o.bbox[0] - prev.bbox[2] > ROW_CELL_MAX_GAP or o.key() in label_keys
+                or o.key() in claimed or line_style(o) != style
+                or (styles and in_form_style(o, styles))):
+            break
+        cells.append(o)
+        prev = o
+    return cells
 
 
 def _eligible(label, value_text: str) -> bool:
@@ -150,6 +247,22 @@ def is_placeholder_value(text: str) -> bool:
 
 
 # -- value line discovery ---------------------------------------------------
+
+
+#: A box caption on an IRS form: a box number, then a wide gap ("15  State",
+#: "1   Wages, tips"). Never a value - "f Employee's address and ZIP code" bound
+#: the next box's "15  State" as its value. Two spaces, so "15 Main St" is not one.
+_BOX_CAPTION = re.compile(r"^\s*\d{1,2}[a-z]?\s{2,}\S")
+
+
+def _same_template(a: Line, b: Line) -> bool:
+    """Same font FAMILY and colour: the form talking, not a filled value. W-2:
+    "For Official Use Only" (template bold) beside the SSN caption (template
+    roman, same red) was bound as the SSN's value."""
+    sa, sb = (a.spans[0] if a.spans else None), (b.spans[0] if b.spans else None)
+    if sa is None or sb is None:
+        return False
+    return sa.font.split("-")[0] == sb.font.split("-")[0] and sa.color == sb.color
 
 
 #: A line that opens with its own caption and a colon starts a new field.
@@ -253,7 +366,12 @@ def _value_lines_for(
             # A filled value is set in a different style from its label; two
             # template-text cells side by side are a header row ("(2) Social
             # security number | (3) Relationship to you"), not a field and its value.
-            if (nearest.bbox[0] - label_x1 <= 80.0
+            # Horizontal text of about the caption's height only: a watermark set
+            # vertically down the page edge ("For Informational Purposes" on the
+            # W-2, 208 pt tall) sits "on" every row it crosses.
+            tall = nearest.height > 2.5 * max(line.height, 1.0)
+            if (not tall and not _same_template(nearest, line) and not _BOX_CAPTION.match(nearest.text)
+                    and nearest.bbox[0] - label_x1 <= 80.0
                     and nearest.key() not in label_keys
                     and nearest.key() not in claimed
                     and line_style(nearest) != line_style(line)
@@ -301,6 +419,8 @@ def _value_lines_for(
                 continue
             if form_styles and in_form_style(candidate_line, form_styles):
                 break  # the form's own text: this field has ended
+            if _BOX_CAPTION.match(candidate_line.text):
+                break  # the next box's caption, not this field's value
             if _OWN_LABEL.match(candidate_line.text):
                 # "- Date of Withdrawal:  04/11/2022" under "- Routing Transit
                 # Number:" is the NEXT field, not this one's value. Bound as a
@@ -312,7 +432,14 @@ def _value_lines_for(
             gap = candidate_line.bbox[1] - prev_bottom
             if gap > LINE_GAP_FACTOR * max(candidate_line.height, line.height, 1.0):
                 break
-            if abs(candidate_line.bbox[0] - anchor_left) > LEFT_EDGE_TOLERANCE:
+            if abs(candidate_line.bbox[0] - anchor_left) > LEFT_EDGE_TOLERANCE and not (
+                # A value CENTERED or right-aligned in its box under the caption
+                # (Form 1040 "ZIP code" -> "94539" starts 21 pt to the right): it
+                # sits under the caption and starts inside its column - not a line
+                # reaching in from the left. Only the first value line qualifies.
+                not stacked and overlaps_label and cx0 >= anchor_left - 0.5
+                and cx0 <= label_x1 + LEFT_EDGE_TOLERANCE
+            ):
                 break
             if _is_pure_financial(candidate_line.text):
                 break

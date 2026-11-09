@@ -87,15 +87,41 @@ def _is_place_name(cleaned: str) -> bool:
     return not any(w in modifiers for w in words)
 
 
+_FINANCIAL_TERM = re.compile(r"wages|amount|withh|deduction|rate\b")
+
+
+def _financial_head_end(cleaned: str, rs: RuleSet, financial_only: bool = True) -> int:
+    """Where the LAST whole-word FINANCIAL term (an amount's caption) ends, or -1.
+
+    Only the money vocabulary takes part. Structural words ("box", "line", "form",
+    "page") are furniture inside instructions: "Home address (number and street).
+    If you have a P.O. box, see instructions." is an address caption, not a box.
+    """
+    end = -1
+    for pattern in rs.non_pii_labels:
+        if financial_only and not _FINANCIAL_TERM.search(pattern.pattern):
+            continue
+        for m in pattern.finditer(cleaned):
+            a, b = m.start(), m.end()
+            while a < b and cleaned[a].isspace():
+                a += 1
+            if b - a < 3:
+                continue
+            if (a > 0 and cleaned[a - 1].isalnum()) or (b < len(cleaned) and cleaned[b].isalnum()):
+                continue  # "pay" inside "payer", "tax" inside "taxpayer"
+            end = max(end, b)
+    return end
+
+
 def _match_label(text: str, rs: RuleSet) -> Optional[tuple[list[PiiType], bool, bool]]:
     """Returns (expected_types, is_non_pii, is_unknown), or None if not a label."""
     cleaned = _clean(text)
     if not cleaned or len(cleaned) > 110:
         return None
-    for pattern in rs.non_pii_labels:
-        m = pattern.search(cleaned)
-        if m and len(m.group().strip()) / max(len(cleaned), 1) >= DOMINANCE:
-            return [], True, False
+    non_pii_dominant = any(
+        (m := pattern.search(cleaned)) and len(m.group().strip()) / max(len(cleaned), 1) >= DOMINANCE
+        for pattern in rs.non_pii_labels
+    )
     best: Optional[tuple[list[PiiType], int]] = None
     for rule in rs.labels:
         m = rule.regex.search(cleaned)
@@ -110,6 +136,19 @@ def _match_label(text: str, rs: RuleSet) -> Optional[tuple[list[PiiType], bool, 
             span = (m.end(), len(m.group().strip()))
             if best is None or span > best[1]:
                 best = (list(rule.expects), span)
+    # The head noun (the term that ends LAST) decides across BOTH lists.
+    # W-2 box 3 "Social security wages" and box 5 "Medicare wages and tips" name
+    # AMOUNTS: typed SSN and Medicare ID, their figures lost the money protection
+    # and were replaced. The other way round, "Federal tax ID" names an EIN: a
+    # dominant "federal tax" used to make it non-PII, so its value was never bound.
+    fin_end = _financial_head_end(cleaned, rs)
+    any_end = _financial_head_end(cleaned, rs, financial_only=False)
+    if best is not None and best[1][0] > any_end:
+        if _is_place_name(cleaned):
+            return None
+        return best[0], False, False
+    if non_pii_dominant or (best is not None and fin_end > best[1][0]):
+        return [], True, False
     if best is not None:
         if _is_place_name(cleaned):
             return None

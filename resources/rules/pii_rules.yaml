@@ -72,6 +72,16 @@ rules:
     validator: ein
     context_any: [ein, employer, federal, tax id, identification]
 
+  # Paid preparer's PTIN: "P" + 8 digits. On the Form 1040 it had no rule and a
+  # model guessed "medical record number", so it was held and left readable.
+  - name: ptin
+    type: TIN
+    pattern: '(?<![A-Za-z0-9])P\d{8}(?![\d])'
+    confidence: 0.9
+    case_sensitive: true
+    context_any: [ptin, preparer]
+    context_required: true
+
   - name: ip_pin
     type: IP_PIN
     pattern: '(?<![\d])\d{6}(?![\d])'
@@ -294,7 +304,7 @@ labels:
     expects: [PERSON, ADDRESS, POSTAL_CODE]
   - pattern: 'name[, ]+(and )?address'
     expects: [PERSON, ADDRESS]
-  - pattern: '(responsible party|authorized signer|managing member|general partner|trustee|executor|fiduciary|beneficiary|principal officer|policyholder|policy owner|named insured|primary insured|subscriber|plan participant|recipient|payee|annuitant|grantor|settlor|decedent|ward|next of kin|contract holder|account owner|policy holder)'
+  - pattern: '(responsible party|authorized signer|managing member|general partner|trustee|executor|fiduciary|beneficiary|principal officer|policyholder|policy owner|named insured|primary insured|subscriber|plan participant|recipient|payee|annuitant|grantor|settlor|decedent|ward|next of kin|contract holder|account owner|policy holder|employee|(ordering|referring|attending|treating|primary care) (provider|physician|doctor)|physician|patient)'
     expects: [PERSON]
   # 'business name' and 'employer name' are the COMPANY, not a person; they
   # are matched by the ORG_PRIVATE rules above and must not be claimed here.
@@ -318,6 +328,8 @@ labels:
     expects: [EIN]
   - pattern: '(itin|individual taxpayer identification)'
     expects: [ITIN]
+  - pattern: '(ptin|preparer tax identification( number)?)'
+    expects: [TIN]
   - pattern: '(tin|taxpayer (identification|id)( number)?|tax id( number)?)'
     expects: [TIN]
   # The possessive is how forms print it ("Firm's name", "Employer's name"); without
@@ -349,6 +361,10 @@ labels:
     expects: [MEMBER_ID]
   - pattern: '(employee|personnel|payroll|badge) (id|number|no\.?|#)'
     expects: [EMPLOYEE_ID]
+  # W-2 box 15 "Employer's state ID number" is the employer's state tax account,
+  # not a driver's licence: longer, so it outranks the 'state id' pattern below.
+  - pattern: 'employer.?s? state (tax )?id( number| no\.?| #)?'
+    expects: [STATE_TAX_ID]
   - pattern: '(driver.?s? licen[cs]e|state id)( number| no\.?| #)?'
     expects: [DRIVERS_LICENSE]
   - pattern: 'passport( number| no\.?| #)?'
@@ -376,8 +392,11 @@ non_pii_labels:
   - '(gross |net |annual |monthly |total |taxable |adjusted )?(wages|salary|income|revenue|receipts|compensation|earnings|pay)'
   - '(total|subtotal|balance|amount|amount due|amount owed|payment|refund|credit|debit)'
   - '(federal|state|local|income|payroll|self-?employment)? ?(tax|taxes|withholding|withheld|liability)'
-  - '(deduction|deductions|expense|expenses|contribution|contributions|distribution|basis|depreciation)'
+  - '(deduction|deductions|expense|expenses|contribution|contributions|distribution|basis|depreciation|benefits|benefit|tips|plans|allocated tips)'
   - '(rate|percentage|percent|apr|yield|allocation)'
   - '(tax year|year|period|quarter|form|schedule|line|page|part|section|box)( number| no\.?| #)?'
   - '(units|shares|quantity|count|hours)'
+  # Agencies named in a form's own headings ("Copy A-For Social Security
+  # Administration" on the W-2 was typed an SSN caption).
+  - '(social security administration|internal revenue service|department of (the )?treasury|franchise tax board)'
   - '(occupation|job title|profession|filing status|status|marital status)'

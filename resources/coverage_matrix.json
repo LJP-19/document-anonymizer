@@ -401,6 +401,7 @@
       "gliner": false,
       "has_detector": true,
       "label_patterns": [
+        "employer.?s? state (tax )?id( number| no",
         "(state tax id|state (id|identification)("
       ],
       "presidio": false,
@@ -428,10 +429,13 @@
       "gliner": true,
       "has_detector": true,
       "label_patterns": [
+        "(ptin|preparer tax identification( numbe",
         "(tin|taxpayer (identification|id)( numbe"
       ],
       "presidio": false,
-      "regex_rules": []
+      "regex_rules": [
+        "ptin"
+      ]
     },
     "UNCLASSIFIED_GROUP_VALUE": {
       "gliner": false,

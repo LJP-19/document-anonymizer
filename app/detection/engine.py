@@ -201,6 +201,29 @@ def _drop_bare_states(candidates: list) -> list:
     return kept
 
 
+def _drop_impossible_model_values(candidates: list) -> list:
+    """Model-only proposals whose SHAPE rules the type out.
+
+    On the IRS Form 1040, GLiNER called the line numbers "1a", "13a", "24" zip codes
+    and the checkbox caption "Are blind" a username. No postal code anywhere is under
+    four characters, and a username has no spaces. Rule and label findings are never
+    touched, and a manual addition always survives.
+    """
+    kept = []
+    for c in candidates:
+        # Only when GLiNER/spaCy alone vouch for it: an AI finding or a rule merged
+        # into the same span is other evidence ("known as tito bong": the AI said
+        # PERSON while GLiNER said username - that is a question for review).
+        model_only = c.source is Source.NER and all(e.source is Source.NER for e in c.evidence)
+        compact = "".join(c.text.split())
+        if model_only and c.pii_type is PiiType.POSTAL_CODE and sum(ch.isalnum() for ch in compact) < 4:
+            continue
+        if model_only and c.pii_type in (PiiType.USERNAME, PiiType.SOCIAL_HANDLE) and " " in c.text.strip():
+            continue
+        kept.append(c)
+    return kept
+
+
 _DATE_TOKEN = re.compile(r"^(0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])[-/]((?:19|20)\d{2})$")
 _IDENTITY_TYPES = {PiiType.PERSON, PiiType.ADDRESS, PiiType.STREET, PiiType.SSN, PiiType.ITIN}
 
@@ -414,6 +437,21 @@ def _retype_known_name_components(candidates: list) -> list:
                                        if unclear else ""),
                         evidence=list(c.evidence) + [Evidence(Source.COVERAGE,
                                                               "a label-confirmed person's name word", 0.0)])
+        elif (c.source is Source.NER and c.group_id is None
+                and c.pii_type in (PiiType.CITY_STATE, PiiType.ORG_PRIVATE, PiiType.STREET)
+                and " " in c.text.strip()):
+            # The WHOLE span is the confirmed person's name ("Torvin Quell's
+            # account" typed ORG by the macOS model build): every word is a known
+            # name word and none is a company word. Not ambiguous - it is the full
+            # name, not a lone component.
+            from ..pseudonymization.generator import looks_like_a_company
+
+            words = [re.sub(r"['’]s$", "", t.strip(".,")) for t in c.text.split()]
+            if (len(words) >= 2 and all(fold(w) in known for w in words)
+                    and not looks_like_a_company(c.text)):
+                c = replace(c, pii_type=PiiType.PERSON,
+                            evidence=list(c.evidence) + [Evidence(Source.COVERAGE,
+                                                                  "a label-confirmed person's full name", 0.0)])
         out.append(c)
     return out
 
@@ -476,6 +514,27 @@ def _type_from_table_columns(doc, candidates: list, ruleset) -> list:
             continue
         for label in line_labels:
             headers.setdefault(label.page_no, []).append(label)
+
+    # A header row extracted as SEPARATE lines - one per cell ("Employee | Employee
+    # ID | Department" on a report): two or more labels on one visual row, each
+    # the whole of its own line. Grouping by line object alone never saw it, and
+    # every name and ID in the table waited for review.
+    whole = [lb for lb in labels if not lb.non_pii and len(lb.expected_types) == 1
+             and lb.start <= 1 and lb.end >= len(lb.line.text.rstrip()) - 1
+             and lb.line.key() not in {h.line.key() for hs in headers.values() for h in hs}]
+    by_row: dict[tuple, list] = {}
+    for lb in whole:
+        mid = (lb.line.bbox[1] + lb.line.bbox[3]) / 2
+        by_row.setdefault((lb.page_no, round(mid / 3.0)), []).append(lb)
+    # Such a row is ALSO what a form's side-by-side captions look like (Form 1040
+    # "Your first name | Last name | Your social security number"), so it may only
+    # CONFIRM a value whose type already agrees, close below it - never retype one.
+    # Retyping by it changed SSNs, addresses and an amount on realistic returns.
+    confirm_only: set[int] = set()
+    for (page_no, _row), row_labels in by_row.items():
+        if len({lb.line.key() for lb in row_labels}) >= 2:
+            headers.setdefault(page_no, []).extend(row_labels)
+            confirm_only.update(id(lb) for lb in row_labels)
     if not headers:
         return candidates
 
@@ -490,27 +549,40 @@ def _type_from_table_columns(doc, candidates: list, ruleset) -> list:
             if candidate.rect[1] <= header.rect[3]:
                 continue
             row_height = max(candidate.rect[3] - candidate.rect[1], 1.0)
-            if candidate.rect[1] - header.rect[3] > 40 * row_height:
+            if candidate.rect[1] - header.rect[3] > (8 if id(header) in confirm_only else 40) * row_height:
+                continue
+            if id(header) in confirm_only and candidate.pii_type is not header.expected_types[0]:
                 continue
             overlap = min(candidate.rect[2], header.rect[2]) - max(
                 candidate.rect[0], header.rect[0]
             )
             width = max(candidate.rect[2] - candidate.rect[0], 1.0)
-            if overlap / width < 0.5:
+            if overlap / width < 0.5 and not _left_aligned_in_column(candidate, header, headers[candidate.page_no]):
                 continue
             expected = header.expected_types[0]
-            if candidate.pii_type is expected:
-                break
-            candidate.evidence.append(
-                Evidence(
-                    Source.GROUP,
-                    f"typed {expected.value} from the '{header.text}' column",
-                    0.0,
-                )
-            )
+            # Record the column even when the type already agrees: that evidence
+            # is what lets authorization treat the column header as this value's
+            # label. Breaking early left every correctly typed table value held.
+            note = f"typed {expected.value} from the '{header.text}' column"
+            if not any(e.detail == note for e in candidate.evidence):
+                # A column header IS this value's label: weigh it like one (a
+                # stacked label's value carries 0.7). At 0.0 a table name the model
+                # scored low stayed UNRESOLVED though its column named it.
+                candidate.evidence.append(Evidence(Source.GROUP, note, 0.6))
             candidate.pii_type = expected
             break
     return candidates
+
+
+def _left_aligned_in_column(candidate, header, page_headers) -> bool:
+    """A value left-aligned under a short header and ending before the next column:
+    "Priya Raghunathan" (92 pt) under "Employee" (40 pt) overlaps it by only 43%."""
+    if abs(candidate.rect[0] - header.rect[0]) > 4.0:
+        return False
+    hmid = (header.rect[1] + header.rect[3]) / 2
+    nxt = [h.rect[0] for h in page_headers
+           if h is not header and h.rect[0] > header.rect[2] and h.rect[1] <= hmid <= h.rect[3]]
+    return not nxt or candidate.rect[2] < min(nxt) - 1.0
 
 
 def _label_hints(candidates: list, groups: list) -> tuple[dict[str, str], set[str]]:
@@ -1131,6 +1203,7 @@ def analyse(
 
     candidates = _drop_label_text(candidates, labels)
     candidates = _drop_bare_states(candidates)
+    candidates = _drop_impossible_model_values(candidates)
     candidates = _drop_numberless_model_streets(candidates)
     candidates = _drop_implausible_model_hits(candidates, document_form_vocabulary)
     candidates = _trim_honorifics(candidates)
@@ -1169,6 +1242,9 @@ def analyse(
     candidates = _type_from_table_columns(doc, candidates, rs)
     candidates = _expand_to_field_values(candidates, groups)
     candidates = _complete_partial_lines(candidates, labels)
+    # Again at the values' final extent: widening can move a value's left edge
+    # under its column ("Ferreira-Lind" -> "Mateo Ferreira-Lind"). Idempotent.
+    candidates = _type_from_table_columns(doc, candidates, rs)
     candidates = _drop_financial_values(candidates)
 
     # A final safety pass. Widening, propagation, and the standalone
