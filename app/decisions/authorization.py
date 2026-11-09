@@ -108,9 +108,36 @@ SOFT_PROTECTION_DOUBTS = ("sits on running header text", "sits on running footer
                           "sits on static boilerplate text", "sits on form instruction text")
 
 
-def _only_detector_doubt(reason: str) -> bool:
+#: GLiNER (the typing model) reading an unfamiliar name as a job title. A verified
+#: PERSON label settles that - but only for a value shaped like a name that contains
+#: no occupation or status word, so "Dependent: Full-time Student" stays held. Found
+#: in CI: "Dependent: Duong Thi Hong" (Vietnamese) was read as an occupation and,
+#: although label-confirmed, waited for review instead of being pseudonymized.
+OCCUPATION_DOUBT = "the model read this as a job title or occupation, but its field label says it is person"
+OCCUPATION_WORDS = frozenset("""
+student full part time retired retiree unemployed employed self homemaker housewife
+disabled minor child infant none n/a na deceased engineer teacher nurse doctor manager
+clerk driver owner officer worker assistant analyst consultant director president
+attorney lawyer accountant agent technician developer designer sales farmer laborer
+""".split())
+
+
+def _occupation_doubt_resolvable(c: Candidate, part: str) -> bool:
+    if not part.startswith(OCCUPATION_DOUBT) or c.pii_type is not PiiType.PERSON:
+        return False
+    from ..detection.heuristics import looks_like_person
+
+    words = {w for w in re.split(r"[\s\-/,.]+", c.text.lower()) if w}
+    return bool(looks_like_person(c.text)[0]) and not (words & OCCUPATION_WORDS)
+
+
+def _only_detector_doubt(reason: str, c: Optional[Candidate] = None) -> bool:
     parts = [p.strip().lower() for p in (reason or "").split(";") if p.strip()]
-    return bool(parts) and all(any(p.startswith(d) for d in LABEL_RESOLVABLE_DOUBTS) for p in parts)
+    return bool(parts) and all(
+        any(p.startswith(d) for d in LABEL_RESOLVABLE_DOUBTS)
+        or (c is not None and _occupation_doubt_resolvable(c, p))
+        for p in parts
+    )
 
 
 def annotate_label_binding(candidates: list, groups: list) -> None:
@@ -133,7 +160,7 @@ def annotate_label_binding(candidates: list, groups: list) -> None:
                 if m and m.group(1) == c.pii_type.value:
                     ok = True
         c.label_confirmed = ok
-        if ok and c.needs_review and _only_detector_doubt(c.review_reason):
+        if ok and c.needs_review and _only_detector_doubt(c.review_reason, c):
             c.needs_review = False
             c.evidence.append(Evidence(Source.GROUP, f"label resolved detector doubt: {c.review_reason}", 0.0))
             c.review_reason = ""

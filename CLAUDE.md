@@ -2636,3 +2636,17 @@ called". The CI `--self-test` never runs the picker, so it could not catch it;
 (mutation-checked). Not confirmed against the user's full backtrace - the
 overflow is a reproduced defect on the crashing thread's only work, not proof
 it was the sole cause. Info.plist now carries the version (`build._stamp_bundle_version`).
+
+## GLiNER's "job title" guess on a labelled name is a detector doubt (0.42.2)
+
+Full suite on the CI stack (trf + GLiNER) failed one case: "Dependent: Duong Thi
+Hong" (Vietnamese) - label-confirmed PERSON, but `_veto` flagged it because GLiNER
+called it an occupation, and that flag was not label-resolvable, so it was held.
+The same test had failed earlier with GLiNER saying "address" - the model's guess
+for this name varies between runs/installs, so fix the CLASS, not one wording.
+`authorization._occupation_doubt_resolvable` lets a verified PERSON label clear it
+only for a name-shaped value with no `OCCUPATION_WORDS` token ("Full-time Student"
+passes looks_like_person, which is why the word list exists). It never clears it
+together with any other doubt (an AI objection stays). Tests in
+test_authorization.py build the disagreement by hand; mutation-checked both ways.
+Local CI-stack run: 810 passed, 9 skipped, 1 xfailed; FP benchmark 0 of 444.

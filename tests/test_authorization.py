@@ -341,3 +341,30 @@ def test_an_exact_confirmed_entity_outranks_soft_repetition_but_nothing_weaker_d
     alias = cand("Quell", source=Source.COVERAGE, evidence=["same value as an entity named in a subject field"],
                  needs_review=True, review_reason=reason + "; may be an unrelated person", ambiguous=True)
     assert not assess(alias).eligible
+
+
+_OCC = ("the model read this as a job title or occupation, but its field label says it "
+        "is person - check it")
+
+
+@pytest.mark.parametrize("name", ["Dương Thị Hồng", "Torvin Quell", "李伟"])
+def test_a_person_label_settles_glinerS_job_title_guess_for_a_name(name):
+    """CI 0.42.1: GLiNER read 'Dương Thị Hồng' under 'Dependent:' as an occupation; the
+    verified PERSON label must settle that detector doubt, as it does for 'address'."""
+    c = cand(name, source=Source.GROUP, group_id="g0", needs_review=True, review_reason=_OCC)
+    annotate_label_binding([c], [_group("Dependent", [PiiType.PERSON])])
+    assert c.label_confirmed and not c.needs_review and assess(c).eligible
+
+
+@pytest.mark.parametrize("value", ["Student", "Full-time Student", "Software Engineer", "Retired"])
+def test_a_real_occupation_under_a_person_label_stays_held(value):
+    c = cand(value, source=Source.GROUP, group_id="g0", needs_review=True, review_reason=_OCC)
+    annotate_label_binding([c], [_group("Dependent", [PiiType.PERSON])])
+    assert c.needs_review and not assess(c).eligible
+
+
+def test_the_job_title_guess_is_not_settled_together_with_an_ai_objection():
+    c = cand("Torvin Quell", source=Source.GROUP, group_id="g0", needs_review=True,
+             review_reason=_OCC + "; the AI review objected: not personal")
+    annotate_label_binding([c], [_group("Dependent", [PiiType.PERSON])])
+    assert c.needs_review and not assess(c).eligible

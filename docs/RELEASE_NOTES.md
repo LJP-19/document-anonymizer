@@ -1,3 +1,12 @@
+### What changed in 0.42.2
+
+**A labelled name the detection model mistook for a job title is pseudonymized
+again.** "Dependent: Duong Thi Hong" was found and confirmed by its field label, but
+the detection model read the unfamiliar name as an occupation, so it waited for review
+instead of being replaced. A verified name label now settles that guess - only for a
+value shaped like a name with no occupation word in it; "Dependent: Full-time
+Student" is still held for review.
+
 ### What changed in 0.42.1
 
 **Fixes a crash on macOS during the first-launch model download.** Choosing an AI
