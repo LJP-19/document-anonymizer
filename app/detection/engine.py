@@ -488,8 +488,18 @@ def _shares_confirmed_name(c, person_words: set) -> bool:
         return False
     if not any(len(w) >= 3 and w in person_words for w in words):
         return False
-    if c.line is not None and ORG_SUFFIX_AFTER.match(c.line.text[c.end:]):
+    # The shared word is the SURNAME: "<child's first name> <confirmed surname>".
+    # A confirmed word followed by an unknown name ("Quell Harrowgate Partners",
+    # "Torvin River Trail") is another entity that merely starts with it.
+    if words[-1] not in person_words:
         return False
+    if c.line is not None:
+        after = c.line.text[c.end:]
+        if ORG_SUFFIX_AFTER.match(after):
+            return False
+        nxt = after.split()[0].strip(".,;:()") if after[:1] == " " and after.split() else ""
+        if nxt[:1].isupper() and fold(nxt) not in person_words and fold(nxt) not in FORM_VOCABULARY:
+            return False      # the name continues with a word that is not this person's
     return not _joined_to_another_entity(c, person_words)
 
 
@@ -577,7 +587,7 @@ def _propagate_confirmed_values(doc, candidates: list, protection) -> list:
     text are never touched.
     """
     from ..decisions.authorization import _joined_to_another_entity, is_amount_shaped
-    from .entities_pass import ORG_SUFFIX_AFTER, _STATE_CODES, _short_match_ok
+    from .entities_pass import ORG_SUFFIX_AFTER, _STATE_CODES, _component_context_is_ambiguous, _short_match_ok
     from .heuristics import FORM_VOCABULARY
     from .protection import CandidateGate
     from .textnorm import find_occurrences, fold
@@ -597,9 +607,12 @@ def _propagate_confirmed_values(doc, candidates: list, protection) -> list:
 
     # Spans already settled (not held): an occurrence inside one needs nothing more.
     settled: dict = {}
+    held_ambiguous: dict = {}
     for c in candidates:
         if not c.needs_review and not getattr(c, "ambiguous", False):
             settled.setdefault(c.line.key(), []).append((c.start, c.end))
+        elif getattr(c, "ambiguous", False):
+            held_ambiguous.setdefault(c.line.key(), []).append((c.start, c.end))
 
     new: list = []
     for key, (sample, types) in confirmed.items():
@@ -616,6 +629,11 @@ def _propagate_confirmed_values(doc, candidates: list, protection) -> list:
                 for start, end in find_occurrences(line.text, sample):
                     if any(s0 <= start and end <= e0 for s0, e0 in settled.get(line.key(), [])):
                         continue
+                    if any(s0 < end and start < e0 for s0, e0 in held_ambiguous.get(line.key(), [])):
+                        continue          # held deliberately: context says it may be someone else
+                    if (single and kind is PiiType.PERSON
+                            and _component_context_is_ambiguous(line.text, start, end, person_words)):
+                        continue          # "Quell Harrowgate Partners", "Torvin River Trail"
                     text = line.text[start:end]
                     has_letters = any(ch.isalpha() for ch in text)
                     if has_letters and not any(ch.isupper() for ch in text) and any(ch.isupper() for ch in line.text):

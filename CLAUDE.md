@@ -2839,3 +2839,7 @@ Developer ID signature: the DMG stays -UNSIGNED and Gatekeeper still asks once
   owner's rule: the business a return is about identifies its owner).
 - A multi-identifier caption (SSN/EIN/TIN/ITIN) lists ALTERNATIVES: `groups.analyse_coverage`
   counts the field complete when any one is found (it flagged "expected EIN" on an SSN).
+- Apply-to-all never overrides a deliberate hold: `_propagate_confirmed_values` skips any
+  occurrence overlapping an `ambiguous` candidate and runs `_component_context_is_ambiguous`
+  on a lone name word; `_shares_confirmed_name` needs the confirmed word LAST (the shared
+  surname) and no unknown capitalised word after it ("Quell Harrowgate Partners").
