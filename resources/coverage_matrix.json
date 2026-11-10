@@ -7,6 +7,7 @@
       "gliner": false,
       "has_detector": true,
       "label_patterns": [
+        "((principal )?business (activity )?code(",
         "(account|acct)[\\s.]*(number|no\\.?|#|id)"
       ],
       "presidio": false,
@@ -127,7 +128,8 @@
       "gliner": true,
       "has_detector": true,
       "label_patterns": [
-        "(ein|employer identification( number| no"
+        "(ein|employer identification( number| no",
+        "(identifying|identification) (number|no\\"
       ],
       "presidio": false,
       "regex_rules": [
@@ -278,7 +280,8 @@
       "label_patterns": [
         "(employer|payer|firm|company|business|fi",
         "((business|company|entity|trade|dba|doin",
-        "(name of (business|company|entity|employ"
+        "(name of (business|company|entity|employ",
+        "(principal business( or profession)?|(na"
       ],
       "presidio": false,
       "regex_rules": []
@@ -391,7 +394,8 @@
       "gliner": true,
       "has_detector": true,
       "label_patterns": [
-        "(ssn|social security( number| no\\.?| #)?"
+        "(ssn|social security( number| no\\.?| #)?",
+        "(identifying|identification) (number|no\\"
       ],
       "presidio": true,
       "regex_rules": [
@@ -434,7 +438,8 @@
       "has_detector": true,
       "label_patterns": [
         "(ptin|preparer tax identification( numbe",
-        "(tin|taxpayer (identification|id)( numbe"
+        "(tin|taxpayer (identification|id)( numbe",
+        "(identifying|identification) (number|no\\"
       ],
       "presidio": false,
       "regex_rules": [
