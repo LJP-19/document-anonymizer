@@ -81,7 +81,7 @@ def test_a_sideways_page_is_read_upright_and_its_values_replaced_in_place(tmp_pa
     page = s.document.pages[0]
     assert page.frame is not None and page.frame.rotation == 90
 
-    applied = {c.text for c in s.candidates if s.decisions.get(c.id).state.name == "ACCEPTED"}
+    applied = {t.original for t in s.plan().targets}
     assert "Torvin Quell" in applied and "512-48-7391" in applied, applied
     assert report.passed, [c.name for c in report.checks if not c.passed]
 
@@ -90,8 +90,7 @@ def test_a_sideways_page_is_read_upright_and_its_values_replaced_in_place(tmp_pa
         assert "Torvin" not in text and "512-48-7391" not in text
         assert "Name(s) shown on return" in text and "1,050,000" in text
         red = [sp for b in d[0].get_text("dict")["blocks"] for ln in b.get("lines", [])
-               for sp in ln["spans"] if sp["color"] == 0xFF0000 and sp["text"].strip()
-               for _ in [ln]]
+               for sp in ln["spans"] if sp["color"] == 0xFF0000 and sp["text"].strip()]
         lines = [ln for b in d[0].get_text("dict")["blocks"] for ln in b.get("lines", [])
                  if any(sp["color"] == 0xFF0000 and sp["text"].strip() for sp in ln["spans"])]
     assert red and lines
@@ -137,3 +136,23 @@ def test_a_value_confirmed_on_one_page_is_replaced_on_every_page_with_one_pseudo
     plan = s.plan()
     ssn = {t.replacement for t in plan.targets if "512" in (t.original or "") and "48" in t.original}
     assert len(ssn) == 1, ssn
+
+
+def test_a_zip_confirmed_by_its_label_is_replaced_where_it_stands_alone(tmp_path):
+    """Real return (0.44.0): the ZIP confirmed under its label on page 6 was held as
+    a shape-only match on pages 1-5, where it is printed with no caption."""
+    d = pymupdf.open()
+    p1 = d.new_page(width=612, height=792)
+    p1.insert_text((72, 60), "Continuation statement", fontname="hebo", fontsize=9)
+    p1.insert_text((400, 60), "97035", fontname="cour", fontsize=10)
+    p2 = d.new_page(width=612, height=792)
+    p2.insert_text((72, 80), "ZIP code", fontname="hebo", fontsize=7)
+    p2.insert_text((72, 92), "97035", fontname="cour", fontsize=10)
+    src = tmp_path / "zip.pdf"
+    d.save(str(src))
+    d.close()
+    s, report, out = _run(src, tmp_path)
+    with pymupdf.open(str(out)) as o:
+        assert "97035" not in o[1].get_text()
+        assert "97035" not in o[0].get_text(), "the unlabelled occurrence was left"
+    assert len({t.replacement for t in s.plan().targets if t.original == "97035"}) == 1

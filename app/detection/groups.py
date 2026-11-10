@@ -651,6 +651,9 @@ def _cover_span(
 # -- coverage analysis (sections 18-19) -------------------------------------
 
 
+_TAX_ID_ALTERNATIVES = {PiiType.SSN, PiiType.EIN, PiiType.TIN, PiiType.ITIN}
+
+
 def analyse_coverage(groups: list[LogicalFieldGroup], candidates: list[Candidate]) -> None:
     by_group: dict[str, list[Candidate]] = {}
     for c in candidates:
@@ -665,6 +668,13 @@ def analyse_coverage(groups: list[LogicalFieldGroup], candidates: list[Candidate
             accepted = SATISFIED_BY.get(expected, {expected})
             if not (group.detected_types & accepted):
                 missing.append(expected)
+
+        # "Identifying number" holds an SSN OR an EIN (0.44.0): alternatives, not
+        # a list of values that must all be present.
+        alternatives = set(group.expected_types)
+        if (missing and len(alternatives) > 1 and alternatives <= _TAX_ID_ALTERNATIVES
+                and group.detected_types & alternatives):
+            missing = []
 
         unclassified = [c for c in members if c.pii_type is PiiType.UNCLASSIFIED_GROUP_VALUE]
         if missing and not unclassified:

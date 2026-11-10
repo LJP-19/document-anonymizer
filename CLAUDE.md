@@ -2837,3 +2837,5 @@ Developer ID signature: the DMG stays -UNSIGNED and Gatekeeper still asks once
   instructions" (ACCOUNT_ID), "Principal business or profession", "Trade or business",
   "Business or activity to which this form relates", "Name of activity" (ORG_PRIVATE,
   owner's rule: the business a return is about identifies its owner).
+- A multi-identifier caption (SSN/EIN/TIN/ITIN) lists ALTERNATIVES: `groups.analyse_coverage`
+  counts the field complete when any one is found (it flagged "expected EIN" on an SSN).

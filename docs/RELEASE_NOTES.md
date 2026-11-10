@@ -1,3 +1,27 @@
+### What changed in 0.44.0
+
+**Sideways pages are read the right way up.** Tax software often prints a landscape
+form (Form 4562, Schedule E continuation sheets) turned sideways on a portrait page.
+Their captions were never matched to the values beside or below them, so names and
+identifying numbers there were missed, and replacements were squeezed into tiny
+horizontal text. Such pages are now read as a person reads them: captions bind as on
+any other page, and each replacement is written in the page's own direction, at the
+original size.
+
+**"Apply to all occurrences" for every confirmed value.** A value a caption confirms on
+one page - a name, company, city, ZIP code, SSN, EIN or account number - is now
+replaced on every page where it appears, including continuation sheets and headers
+with no caption at all. It gets the same pseudonym everywhere. Previously such
+occurrences could be missed, held for review, or given a different replacement when a
+model typed them differently (a city read as a person, a ZIP as "shape only").
+Family members who share a confirmed person's surname are treated as people too. A
+surname joined to a company word ("Smith & Wesson") still waits for your review.
+
+**More captions recognised:** "Identifying number" (SSN or EIN), "Business code" /
+"Enter code from instructions", "Principal business or profession", "Trade or
+business", "Business or activity to which this form relates", "Name of activity".
+The business a return is about is treated as identifying, like a company name.
+
 ### What changed in 0.43.0
 
 **Settings window.** One place for every preference: the Settings button in the

@@ -67,6 +67,8 @@ What is implemented and covered by tests:
 | Settings window (Ctrl+, / Cmd+,): Change AI model, Fast mode, AI review, Careful mode, output folder - saved between sessions | done (0.43.0) |
 | Fast mode: skip the AI review and the re-check (same automatic redactions, fewer review suggestions) | done (0.43.0) |
 | Check leftovers: every occurrence of a value being changed that is still readable, incl. name parts; auto-run in final review | done (0.43.0) |
+| Sideways (rotated) pages read upright; replacements written in the page's own direction | done (0.44.0) |
+| Apply to all occurrences: a caption-confirmed value replaced on every page, one pseudonym | done (0.44.0) |
 | Skip: ends the AI review and the re-check of the current document, keeps what was found | done |
 | Client roster + pseudonym mapping workbook | done |
 | DOB, citizenship, birthplace, gender categories | done |
