@@ -340,7 +340,7 @@ def build_return(path: Path, h: Household, name: str = "return") -> FormDoc:
             y += 18
         if "SCHEDULE C" in title:
             d.label(p, 36, 190, "A Principal business or profession, including product or service")
-            d.value(p, 36, 204, "bookkeeping services", "business_activity", pii=False)
+            d.value(p, 36, 204, "bookkeeping services", "business_activity")  # owner, 0.44.0: identifying
             d.label(p, 36, 222, "Name of proprietor")
             d.value(p, 36, 236, f"{h.spouse_first} {h.last}", "person")
             d.label(p, 36, 254, "E Business address (including suite or room no.)")
