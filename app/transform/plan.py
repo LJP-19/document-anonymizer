@@ -71,6 +71,14 @@ class TransformationPlan:
     authorization_log: list = field(default_factory=list)
     #: Candidates marked ACCEPTED that the authorization policy refused here.
     refused: list = field(default_factory=list)
+    #: page number -> PageFrame for pages read in a rotated upright frame
+    #: (document/frame.py). Every rect in this plan is in MODEL coordinates; the
+    #: redactor and the export check convert with this before touching the PDF.
+    page_frames: dict = field(default_factory=dict)
+
+    def pdf_rect(self, page_no: int, rect):
+        frame = self.page_frames.get(page_no)
+        return frame.to_pdf_rect(rect) if frame is not None else rect
 
     @property
     def replacements(self) -> list[str]:
@@ -160,6 +168,10 @@ def build_plan(
         ocr_required_pages=list(ocr_required_pages or []),
         warnings=list(detection.warnings),
     )
+    if document is not None:
+        plan.page_frames = {
+            p.number: p.frame for p in document.pages if getattr(p, "frame", None) is not None
+        }
 
     skipped_lines: set[tuple[int, int, int]] = set()
 

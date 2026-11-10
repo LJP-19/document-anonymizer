@@ -172,12 +172,23 @@ def apply_plan(plan: TransformationPlan, doc: Optional[pymupdf.Document] = None)
             for page_no in sorted({t.page_no for t in plan.targets}):
                 page = pdf[page_no]
                 targets = plan.targets_for_page(page_no)
+                # Targets are in MODEL coordinates: on a page read in a rotated
+                # upright frame (document/frame.py) the page's words are brought
+                # into that frame for every geometric decision, and each rectangle
+                # or point goes back to PDF coordinates only when drawn.
+                frame = plan.page_frames.get(page_no)
+
+                def model_words(raw_words):
+                    if frame is None:
+                        return raw_words
+                    return [tuple(frame.to_frame_rect(tuple(w[:4]))) + tuple(w[4:]) for w in raw_words]
 
                 # 1. Mark and permanently remove the original content.
-                words = page.get_text("words")
+                words = model_words(page.get_text("words"))
                 for t in targets:
                     for rect in removal_rects(t, words):
-                        page.add_redact_annot(rect, fill=None)
+                        page.add_redact_annot(
+                            pymupdf.Rect(plan.pdf_rect(page_no, tuple(rect))), fill=None)
                     report.redacted += 1
 
                 # Keep images and line art intact so tables and rules survive.
@@ -192,20 +203,23 @@ def apply_plan(plan: TransformationPlan, doc: Optional[pymupdf.Document] = None)
                 for t in targets:
                     if t.blackout:
                         page.draw_rect(
-                            pymupdf.Rect(t.rect), color=(0, 0, 0), fill=(0, 0, 0),
-                            width=0.5, overlay=True,
+                            pymupdf.Rect(plan.pdf_rect(page_no, tuple(t.rect))),
+                            color=(0, 0, 0), fill=(0, 0, 0), width=0.5, overlay=True,
                         )
                         report.inserted += 1
 
                 # 2b. Insert the red replacement text into the cleared area,
                 # on the original baseline where it fits beside what remains.
-                remaining = page.get_text("words")
+                remaining = model_words(page.get_text("words"))
                 for t in targets:
                     if t.blackout:
                         continue
-                    status = _insert_at_baseline(page, t, targets, remaining)
-                    if status is None:
-                        status = _insert_replacement(page, t, targets)
+                    if frame is not None:
+                        status = _insert_rotated(page, t, targets, remaining, frame)
+                    else:
+                        status = _insert_at_baseline(page, t, targets, remaining)
+                        if status is None:
+                            status = _insert_replacement(page, t, targets)
                     if status == "shrunk":
                         report.shrunk.append(t.candidate_id)
                     elif status == "overflow":
@@ -273,6 +287,54 @@ def _insert_at_baseline(page: pymupdf.Page, target: Target, page_targets: list, 
             return "ok" if current >= size - 0.01 else "shrunk"
         current -= 0.25
     return None
+
+
+def _insert_rotated(page: pymupdf.Page, target: Target, page_targets: list, words: list, frame) -> str:
+    """Replacement text on a page read in a rotated frame (document/frame.py).
+
+    Fitted exactly like _insert_at_baseline - same x, same baseline, same size,
+    shrinking (down to the minimum) to end before the next word or target on its
+    row - but computed in the upright frame and written at the ORIGINAL angle with
+    insert_text(rotate=...). Writing it horizontally into the narrow vertical box
+    of a sideways value is what produced tiny unreadable replacements. There is no
+    boxed fallback here (insert_textbox lays out horizontally); insert_text at the
+    minimum size is the last resort, so nothing is silently lost.
+    """
+    if not target.replacement:
+        return "failed"
+    x0, y0, x1, y1 = target.rect
+    baseline = target.origin[1] if target.origin and (y0 - 2 <= target.origin[1] <= y1 + 2) \
+        else y1 - 0.22 * (y1 - y0)
+    edge = frame.frame_size[0] - 2
+    limit = edge
+    for w in words:
+        wx0, wy0, wx1, wy1 = w[:4]
+        if wx0 >= x1 - 0.5 and wy0 < y1 - 1 and wy1 > y0 + 1:
+            limit = min(limit, wx0 - 2.0)
+    for other in page_targets:
+        if other is target:
+            continue
+        ox0, oy0, ox1, oy1 = other.rect
+        if ox0 >= x1 - 0.5 and oy0 < y1 - 1 and oy1 > y0 + 1:
+            limit = min(limit, ox0 - 2.0)
+    width_available = max(limit - x0, 1.0)
+    fontname = _safe_font(target.font_name, getattr(target, "font_flags", 0))
+    size = max(target.font_size, MIN_FONT_SIZE)
+    current = size
+    while current > MIN_FONT_SIZE and pymupdf.get_text_length(
+            target.replacement, fontname=fontname, fontsize=current) > width_available:
+        current -= 0.25
+    current = max(current, MIN_FONT_SIZE)
+    try:
+        page.insert_text(frame.to_pdf_point(x0, baseline), target.replacement,
+                         fontsize=current, fontname=fontname, color=target.color,
+                         rotate=frame.rotation)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("rotated replacement failed for %s: %s", target.candidate_id, type(exc).__name__)
+        return "failed"
+    if pymupdf.get_text_length(target.replacement, fontname=fontname, fontsize=current) > width_available:
+        return "overflow"
+    return "ok" if current >= size - 0.01 else "shrunk"
 
 
 def _insert_replacement(page: pymupdf.Page, target: Target, page_targets: list) -> str:

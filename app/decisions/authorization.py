@@ -375,7 +375,9 @@ def assess(c: Candidate, confirmed_words: Optional[set] = None) -> Assessment:
         return Assessment(False, "a financial amount - never changed automatically")
     if c.needs_review:
         exact_entity = (c.source is Source.COVERAGE and not getattr(c, "ambiguous", False)
-                        and any(e.detail.startswith("same value as an entity") for e in c.evidence))
+                        and any(e.detail.startswith(("same value as an entity",
+                                                     "same value as a label-confirmed value"))
+                                for e in c.evidence))
         parts = [p.strip().lower() for p in (c.review_reason or "").split(";") if p.strip()]
         # A detector's doubt about its own score/type ("low model confidence") is
         # settled when the value is made only of a CONFIRMED person's name words -
@@ -433,6 +435,14 @@ def assess(c: Candidate, confirmed_words: Optional[set] = None) -> Assessment:
     ev = _evidence(c)
     if _own_validator_failed(c):
         return Assessment(False, "fails its structural validation")
+    # Apply to all occurrences (0.44.0): the exact value a label confirmed elsewhere
+    # in this document (engine._unify_with_confirmed_values already gave it the
+    # confirmed type and cleared only doubts that confirmation settles). Checked
+    # before the evidence-level vetoes: this occurrence's own score is not the
+    # witness - the label elsewhere is.
+    if c.source is not Source.MANUAL and any(
+            e.detail.startswith("same value as a label-confirmed value") for e in c.evidence):
+        return Assessment(True, "the same value as a label-confirmed one elsewhere in the document")
     if (getattr(c, "adjudication", "") or "") == "UNRESOLVED":
         return Assessment(False, "evidence is unresolved, not confirmed")
     # A reliable occurrence of an entity a LABEL confirmed is confirmed by that

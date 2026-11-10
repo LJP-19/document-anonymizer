@@ -279,7 +279,9 @@ def _token_counts_outside_targets(src, plan: TransformationPlan) -> dict:
         # inside a wide target's bounding box survives - excluding it here made the
         # baseline one short ("Tax" in "Formosa Tax Partners LLC" vs 32 form "Tax").
         glyphs = [r for r in (getattr(t, "char_rects", None) or []) if r]
-        by_page.setdefault(t.page_no, []).extend(glyphs or [t.rect])
+        # Plan rects are in model coordinates; the words below are the PDF's.
+        by_page.setdefault(t.page_no, []).extend(
+            plan.pdf_rect(t.page_no, tuple(r)) for r in (glyphs or [t.rect]))
     kept_words: list[str] = []
     for page_no, page in enumerate(src):
         rects = by_page.get(page_no, [])
@@ -454,7 +456,7 @@ def _check_layout_sanity(report: VerificationReport, plan: TransformationPlan, o
     off_page = 0
     for t in plan.targets:
         page = out[t.page_no]
-        if not pymupdf.Rect(t.rect).intersects(page.rect):
+        if not pymupdf.Rect(plan.pdf_rect(t.page_no, tuple(t.rect))).intersects(page.rect):
             off_page += 1
     report.add(
         "replacement geometry sane",

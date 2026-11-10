@@ -2808,3 +2808,32 @@ Developer ID signature: the DMG stays -UNSIGNED and Gatekeeper still asks once
 - QGroupBox stylesheet padding is not counted when Qt sizes the box: spacing lives
   in the layout (`settings_dialog._box`), and non-wrapping hint labels are pinned to
   their size hint on show - otherwise explanation lines were clipped.
+
+## 0.44.0: sideways pages and apply-to-all occurrences
+
+- **A page whose text runs sideways is read in an UPRIGHT frame** (`app/document/frame.py`).
+  Tax software prints landscape forms (4562, Sch E continuation) rotated 90 degrees on a
+  portrait page; PyMuPDF reports every line running vertically, so no label was "left of"
+  or "above" anything and nothing bound. When >= 60% of a page's characters run in one
+  non-horizontal direction, `provider._build_page` converts every bbox/origin into the
+  frame (`Page.frame`). Detection is unchanged. Geometry goes back to PDF coordinates
+  ONLY where the real PDF is touched: the redactor (`plan.pdf_rect`, removal rects,
+  blackout), `_insert_rotated` (writes at the original angle, `insert_text(rotate=...)`),
+  the verifier's geometric checks, and the window's overlays (`DocumentTab._pdf_rect`).
+  Any new code that draws on, or measures, the real page must map through the frame.
+- **Every occurrence of a label-confirmed value is that value**
+  (`engine._unify_with_confirmed_values`, `_propagate_confirmed_values`): a city, firm,
+  ZIP or account confirmed by its label on one page was held or missed on pages where it
+  appears without one, and when applied got a DIFFERENT pseudonym (another type, another
+  registry key). Occurrences take the confirmed type and are authorized
+  (`authorization`: "same value as a label-confirmed value") only when every hold reason
+  is one confirmation settles (`_SETTLED_BY_CONFIRMED_VALUE`) - never an AI objection,
+  context ambiguity or a failed validator. New occurrences pass the CandidateGate.
+  Guards: form words, months, state codes, lower case in mixed-case prose, short names
+  (`_short_match_ok`), org suffix after a person, "Smith & Wesson".
+- **A household name sharing a confirmed person's word** ("<child> <confirmed surname>",
+  2-4 name-shaped words, no form word) is a person (`_shares_confirmed_name`).
+- Labels added: "Identifying number" (SSN/EIN/TIN), "Business code"/"Enter code from
+  instructions" (ACCOUNT_ID), "Principal business or profession", "Trade or business",
+  "Business or activity to which this form relates", "Name of activity" (ORG_PRIVATE,
+  owner's rule: the business a return is about identifies its owner).

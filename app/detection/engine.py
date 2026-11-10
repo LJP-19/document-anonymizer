@@ -443,6 +443,205 @@ def _trim_possessives(candidates: list) -> list:
     return out
 
 
+#: Hold reasons the label-confirmed value elsewhere in the document settles: a
+#: detector's doubt about its own type or score, the corroboration gate ("no label
+#: backs it up" - one does, elsewhere), a shape-only match, a model's non-PII guess.
+#: Never an AI objection, context ambiguity, or a failed validator.
+_SETTLED_BY_CONFIRMED_VALUE = (
+    "a model or pattern proposed this",
+    "looks like a ",
+    "the model read this as a",
+    "matched by name shape rather than by the language model",
+    "location entity outside a labelled address group",
+    "a known person's name, typed as a place by the model",
+    "low model confidence",
+    "low presidio confidence",
+    "the model called this an address, but it has no number",
+    "detectors disagree:",
+    "partial / incomplete detection",
+    "matched on part of a known name",
+    "not applied unless you confirm it",
+)
+CONFIRMED_VALUE_EVIDENCE = "same value as a label-confirmed value elsewhere in the document"
+SHARED_NAME_EVIDENCE = "same value as a label-confirmed value: a name that includes a confirmed person's name"
+
+
+def _shares_confirmed_name(c, person_words: set) -> bool:
+    """A 2-4 word name, every word name-shaped and none a form word, that includes
+    a word of a person a LABEL confirmed - the filer's household or another person
+    named beside them ("<child's first name> <confirmed surname>"). Owner's rule
+    (0.44.0): every person's name is identity, third parties included. A company
+    word or a joined second name ("Smith & Wesson") never qualifies."""
+    from ..decisions.authorization import _joined_to_another_entity
+    from .entities_pass import ORG_SUFFIX_AFTER
+    from .heuristics import FORM_VOCABULARY
+    from .textnorm import fold, looks_like_name_token
+
+    raw = c.text.split()
+    words = [fold(w.strip(".,;:()")) for w in raw]
+    if not 2 <= len(words) <= 4 or not person_words:
+        return False
+    if not all(looks_like_name_token(w.strip(".,;:()")) or (len(w.strip(".")) == 1 and w[:1].isupper())
+               for w in raw):
+        return False
+    if any(w in FORM_VOCABULARY for w in words if len(w) > 1):
+        return False
+    if not any(len(w) >= 3 and w in person_words for w in words):
+        return False
+    if c.line is not None and ORG_SUFFIX_AFTER.match(c.line.text[c.end:]):
+        return False
+    return not _joined_to_another_entity(c, person_words)
+
+
+def _unify_with_confirmed_values(candidates: list) -> list:
+    """Every occurrence of a value a LABEL confirmed somewhere is that value.
+
+    Measured on real 108-page returns (0.44.0): a city confirmed as an address by
+    its field label on page 6 was typed PERSON by spaCy on pages 1-5 and held; an
+    employer name confirmed on three pages was typed PERSON on three others and
+    held; a ZIP code confirmed on page 6 was held as "shape only" on pages 1-5; a
+    bank account confirmed on page 1 was held on page 57 because a model called it
+    an amount. Propagation only follows registered people and identifiers, so
+    these occurrences never learned the confirmed type - and had they been applied
+    as typed, they would have received a DIFFERENT pseudonym (another registry
+    key). Each such occurrence now takes the confirmed value's type and is
+    eligible like propagation, when its only doubts are ones that confirmation
+    settles. Exact folded text only, at least 3 characters, one confirmed type.
+    """
+    from ..decisions.authorization import _joined_to_another_entity, is_amount_shaped
+    from .textnorm import fold
+
+    confirmed: dict = {}
+    for c in candidates:
+        if (getattr(c, "label_confirmed", False) and not c.needs_review
+                and not getattr(c, "ambiguous", False) and c.source is not Source.MANUAL
+                and c.pii_type is not PiiType.UNCLASSIFIED_GROUP_VALUE):
+            key = fold(c.text)
+            if len(key) >= 3 and not is_amount_shaped(c.text):
+                confirmed.setdefault(key, set()).add(c.pii_type)
+    if not confirmed:
+        return candidates
+    person_words: set = set()
+    for key, types in confirmed.items():
+        if PiiType.PERSON in types:
+            person_words.update(key.split())
+    for c in candidates:
+        if c.source is Source.MANUAL or getattr(c, "blackout", False):
+            continue
+        if getattr(c, "label_confirmed", False) and not c.needs_review and not getattr(c, "ambiguous", False):
+            continue                     # authorized by its own label already
+        types = confirmed.get(fold(c.text))
+        if not types and c.pii_type is PiiType.PERSON and _shares_confirmed_name(c, person_words):
+            types = {PiiType.PERSON}
+            note = SHARED_NAME_EVIDENCE
+        else:
+            note = CONFIRMED_VALUE_EVIDENCE
+        if not types or len(types) != 1:
+            continue
+        kind = next(iter(types))
+        parts = [p.strip() for p in (c.review_reason or "").split(";") if p.strip()]
+        if any(not p.lower().startswith(_SETTLED_BY_CONFIRMED_VALUE) for p in parts):
+            continue                     # an AI objection or context ambiguity stays
+        if (kind is PiiType.PERSON and len(fold(c.text).split()) == 1
+                and _joined_to_another_entity(c, person_words)):
+            continue                     # "Smith & Wesson" is something else
+        if c.pii_type is not kind:
+            c.evidence = list(c.evidence) + [Evidence(
+                Source.COVERAGE, f"retyped {c.pii_type.value} -> {kind.value}: {CONFIRMED_VALUE_EVIDENCE}", 0.0)]
+            c.pii_type = kind
+        c.evidence = list(c.evidence) + [Evidence(Source.COVERAGE, note, 0.9)]
+        c.ambiguous = False
+        c.needs_review = False
+        c.review_reason = ""
+        c.adjudication = "CONFIRMED"
+    return candidates
+
+
+_MONTHS = {
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december", "jan", "feb", "mar", "apr",
+    "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+}
+
+
+def _propagate_confirmed_values(doc, candidates: list, protection) -> list:
+    """Apply to all occurrences: find every place a label-confirmed value is
+    written and make it a detection of exactly that value - also where no detector
+    found anything, or where a longer, unconfirmed guess covers it ("<confirmed
+    company> <extra word>" typed PERSON by spaCy).
+
+    Measured on real 108-page returns (0.44.0): occurrences of confirmed values on
+    other pages were missed outright (a 3-letter name on three pages) or held
+    inside a longer unconfirmed guess. Every new detection passes the protection
+    gate like any other path that adds candidates, so labels, figures and form
+    text are never touched.
+    """
+    from ..decisions.authorization import _joined_to_another_entity, is_amount_shaped
+    from .entities_pass import ORG_SUFFIX_AFTER, _STATE_CODES, _short_match_ok
+    from .heuristics import FORM_VOCABULARY
+    from .protection import CandidateGate
+    from .textnorm import find_occurrences, fold
+
+    confirmed: dict = {}
+    for c in candidates:
+        if (getattr(c, "label_confirmed", False) and not c.needs_review
+                and not getattr(c, "ambiguous", False) and c.source is not Source.MANUAL
+                and not getattr(c, "blackout", False)
+                and c.pii_type is not PiiType.UNCLASSIFIED_GROUP_VALUE):
+            key = fold(c.text)
+            if len(key.replace(" ", "")) >= 3 and not is_amount_shaped(c.text):
+                confirmed.setdefault(key, (c.text, set()))[1].add(c.pii_type)
+    if not confirmed:
+        return candidates
+    person_words = {w for key, (_t, types) in confirmed.items() if PiiType.PERSON in types for w in key.split()}
+
+    # Spans already settled (not held): an occurrence inside one needs nothing more.
+    settled: dict = {}
+    for c in candidates:
+        if not c.needs_review and not getattr(c, "ambiguous", False):
+            settled.setdefault(c.line.key(), []).append((c.start, c.end))
+
+    new: list = []
+    for key, (sample, types) in confirmed.items():
+        if len(types) != 1:
+            continue
+        kind = next(iter(types))
+        words = key.split()
+        single = len(words) == 1
+        if single and (words[0] in FORM_VOCABULARY or words[0] in _MONTHS
+                       or words[0].upper() in _STATE_CODES):
+            continue
+        for page in doc.pages:
+            for line in page.lines:
+                for start, end in find_occurrences(line.text, sample):
+                    if any(s0 <= start and end <= e0 for s0, e0 in settled.get(line.key(), [])):
+                        continue
+                    text = line.text[start:end]
+                    has_letters = any(ch.isalpha() for ch in text)
+                    if has_letters and not any(ch.isupper() for ch in text) and any(ch.isupper() for ch in line.text):
+                        continue          # lower-case in mixed-case prose: an ordinary word
+                    if single and kind is PiiType.PERSON and len(text) <= 3 and not _short_match_ok(text):
+                        continue
+                    if kind is PiiType.PERSON and ORG_SUFFIX_AFTER.match(line.text[end:]):
+                        continue          # "<surname> Manufacturing Inc." is a company
+                    rect = line.rect_for(start, end)
+                    if rect is None:
+                        continue
+                    cand = Candidate(
+                        pii_type=kind, text=text, page_no=page.number, rect=rect, line=line,
+                        start=start, end=end, confidence=0.9, source=Source.COVERAGE,
+                        evidence=[Evidence(Source.COVERAGE, CONFIRMED_VALUE_EVIDENCE, 0.9)],
+                    )
+                    if single and kind is PiiType.PERSON and _joined_to_another_entity(cand, person_words):
+                        continue      # "Smith & Wesson" names something else
+                    new.append(cand)
+                    settled.setdefault(line.key(), []).append((start, end))
+    if not new:
+        return candidates
+    new, _log = CandidateGate(protection).run(new)
+    return candidates + new
+
+
 def _retype_known_name_components(candidates: list) -> list:
     """A registered person's name word that a MODEL typed as a place or company
     ("Torvin confirmed ..." tagged GPE) is that person: the field label that
@@ -1322,6 +1521,10 @@ def analyse(
     annotate_label_binding(candidates, groups)
     # Strict PII-only: a proposal nothing corroborates is held for review.
     candidates, held = hold_unconfirmed_proposals(candidates)
+    # Apply to all occurrences: a value its label confirmed anywhere is that value
+    # everywhere, with the same type (and so the same pseudonym).
+    candidates = _unify_with_confirmed_values(candidates)
+    candidates = _propagate_confirmed_values(doc, candidates, protection)
     if held:
         log.debug("held %d unconfirmed proposal(s) for review", held)
     rejected_by_gate = sum(1 for d in gate_log if d.action == "reject")
@@ -1353,6 +1556,10 @@ def analyse(
     confirmed = probable = unresolved = 0
     for candidate in candidates:
         verdict = adjudicate(candidate)
+        if any(e.detail in (CONFIRMED_VALUE_EVIDENCE, SHARED_NAME_EVIDENCE) for e in candidate.evidence):
+            # Its witness is the label that confirmed the same value elsewhere,
+            # not this occurrence's own detector scores.
+            verdict = Adjudication.CONFIRMED
         candidate.adjudication = verdict.value
         if verdict is Adjudication.CONFIRMED:
             confirmed += 1

@@ -337,12 +337,26 @@ labels:
     expects: [TIN]
   - pattern: '(tin|taxpayer (identification|id)( number)?|tax id( number)?)'
     expects: [TIN]
+  # Form 4562, 8829, 8582 and many statements print "Identifying number" for the
+  # filer's SSN or EIN; it had no label, so the value was found only where a rule's
+  # shape happened to match (0.44.0, real report).
+  - pattern: '(identifying|identification) (number|no\.?|#)'
+    expects: [SSN, EIN, TIN]
+  # Schedule C line B "Enter code from instructions" / "Business code": the six-digit
+  # activity code (owner, 0.44.0: treat as identifying).
+  - pattern: '((principal )?business (activity )?code( number| no\.?)?|enter code from instructions)'
+    expects: [ACCOUNT_ID]
   # The possessive is how forms print it ("Firm's name", "Employer's name"); without
   # it the generic "...name" PERSON rule claimed the label and a firm's name got a
   # person's pseudonym (0.41.0).
   - pattern: '((business|company|entity|trade|dba|doing business as|legal|firm|employer|payer|payee|partnership|corporation|llc)([''’]s)? name)'
     expects: [ORG_PRIVATE]
   - pattern: '(name of (business|company|entity|employer|partnership|corporation|firm))'
+    expects: [ORG_PRIVATE]
+  # 0.44.0 (owner): the business a return is about identifies its owner - Schedule C
+  # "Principal business or profession", Form 4562 "Business or activity to which this
+  # form relates", Schedule E / Form 8582 "Name of activity", "Trade or business".
+  - pattern: '(principal business( or profession)?|(name of )?(the )?trade or business|business or activity( to which this form relates)?|name of (the )?activity|(type|kind) of business|business activity)'
     expects: [ORG_PRIVATE]
   - pattern: '(e-?mail( address)?)'
     expects: [EMAIL]

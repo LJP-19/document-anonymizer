@@ -633,9 +633,25 @@ class DocumentTab(QWidget):
         QTimer.singleShot(0, lambda: self._scroll_both(page_no))
         QTimer.singleShot(180, lambda: self._scroll_both(page_no))
 
+    def _pdf_rect(self, page_no: int, rect):
+        """Model rect -> the PDF's own coordinates, which the canvases draw in.
+        Differs only on a page read in a rotated frame (document/frame.py)."""
+        if rect is None or not self.session or not self.session.document:
+            return rect
+        pages = self.session.document.pages
+        return pages[page_no].to_pdf_rect(tuple(rect)) if 0 <= page_no < len(pages) else rect
+
+    def _model_rect(self, page_no: int, rect):
+        """A rect from the canvas (PDF coordinates) -> model coordinates."""
+        if rect is None or not self.session or not self.session.document:
+            return rect
+        pages = self.session.document.pages
+        return pages[page_no].to_model_rect(tuple(rect)) if 0 <= page_no < len(pages) else rect
+
     def _scroll_both(self, page_no: int, rect=None) -> None:
         if not shiboken6.isValid(self):
             return
+        rect = self._pdf_rect(page_no, rect)
         self.left_canvas.scroll_to_page(page_no, rect, self.zoom)
         self.right_canvas.scroll_to_page(page_no, rect, self.zoom)
         if self.page_spin.value() != page_no + 1:
@@ -798,6 +814,8 @@ class DocumentTab(QWidget):
         def close(a: tuple, b: tuple, eps: float = 0.75) -> bool:
             return all(abs(x - y) <= eps for x, y in zip(a, b))
 
+        rect = self._model_rect(page_no, rect)
+
         matches = [
             c for c in self.session.candidates
             if c.page_no == page_no and close(c.rect, rect)
@@ -816,7 +834,7 @@ class DocumentTab(QWidget):
 
     def on_region_drawn(self, page_no: int, rect: tuple) -> None:
         """A drawn area is blacked out: a pseudonym cannot stand in for a mark."""
-        added = self.session.add_manual_region(page_no, rect)
+        added = self.session.add_manual_region(page_no, self._model_rect(page_no, rect))
         if added is None:
             return
         self._after_decision()
@@ -897,8 +915,11 @@ class DocumentTab(QWidget):
         self._set_find_highlights(0 if self._find_hits else -1)
 
     def _set_find_highlights(self, current: int) -> None:
-        self.left_canvas.set_find_hits(self._find_hits, current)
-        self.right_canvas.set_find_hits(self._find_hits, current)
+        from dataclasses import replace
+
+        shown = [replace(h, rect=self._pdf_rect(h.page_no, h.rect)) for h in self._find_hits]
+        self.left_canvas.set_find_hits(shown, current)
+        self.right_canvas.set_find_hits(shown, current)
 
     def _goto_find_hit(self, index: int) -> None:
         if not (0 <= index < len(self._find_hits)):
@@ -1095,7 +1116,8 @@ class DocumentTab(QWidget):
         by_page: dict[int, list] = {p: [] for p in self.visible_pages()}
         for candidate in self.session.candidates:
             if candidate.id in applied and candidate.page_no in by_page:
-                by_page[candidate.page_no].append((candidate.rect, "redact", False))
+                by_page[candidate.page_no].append(
+                    (self._pdf_rect(candidate.page_no, candidate.rect), "redact", False))
         for page_no, overlays in by_page.items():
             self.right_canvas.set_overlays(page_no, overlays)
 
@@ -1200,7 +1222,8 @@ class DocumentTab(QWidget):
                 self.selected_key is not None
                 and (candidate.pii_type, candidate.normalized) == self.selected_key
             )
-            by_page[candidate.page_no].append((candidate.rect, kind, focused))
+            by_page[candidate.page_no].append(
+                (self._pdf_rect(candidate.page_no, candidate.rect), kind, focused))
         for page_no, overlays in by_page.items():
             self.left_canvas.set_overlays(page_no, overlays)
 

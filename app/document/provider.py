@@ -50,6 +50,13 @@ class NativePdfTextProvider(DocumentTextProvider):
     def _build_page(self, doc: pymupdf.Document, index: int) -> Page:
         page = doc[index]
         raw = page.get_text("rawdict")
+        # A page whose text runs sideways (a landscape form printed rotated on a
+        # portrait page) is read in its upright frame - see frame.py.
+        from .frame import dominant_frame, to_frame_raw
+
+        frame = dominant_frame(raw, page.rect.width, page.rect.height)
+        if frame is not None:
+            to_frame_raw(raw, frame)
         blocks: list[Block] = []
         char_count = 0
 
@@ -74,13 +81,15 @@ class NativePdfTextProvider(DocumentTextProvider):
 
         blocks = _merge_comb_runs(blocks)
         needs_ocr, reason = self._assess_ocr(page, char_count)
+        width, height = frame.frame_size if frame is not None else (page.rect.width, page.rect.height)
         built = Page(
             number=index,
-            width=page.rect.width,
-            height=page.rect.height,
+            width=width,
+            height=height,
             blocks=blocks,
             needs_ocr=needs_ocr,
             ocr_reason=reason,
+            frame=frame,
         )
         if not needs_ocr:
             unreadable, why = self._assess_extraction(built)

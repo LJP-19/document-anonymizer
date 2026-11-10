@@ -193,6 +193,18 @@ class Page:
     blocks: list[Block]
     needs_ocr: bool = False
     ocr_reason: str = ""
+    #: Set when the page's text runs sideways or upside down (see frame.py): every
+    #: coordinate on this page is then in the upright reading frame, and width /
+    #: height are the frame's. None = page coordinates, as almost always.
+    frame: Optional[object] = None
+
+    def to_pdf_rect(self, rect: Rect) -> Rect:
+        """A rectangle in this page's model coordinates, in the real PDF's."""
+        return self.frame.to_pdf_rect(rect) if self.frame is not None else rect
+
+    def to_model_rect(self, rect: Rect) -> Rect:
+        """A rectangle in the real PDF's coordinates (a box drawn on screen), in the model's."""
+        return self.frame.to_frame_rect(rect) if self.frame is not None else rect
 
     @property
     def lines(self) -> list[Line]:
