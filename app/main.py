@@ -158,6 +158,21 @@ def _self_test() -> int:
         result_path.write_text("\n".join(lines), encoding="utf-8")
         return 1
 
+    # The AI engine (llama.cpp) ships inside the app: the AI review downloads only
+    # a model file, never an engine. Importing llama_cpp loads its native library
+    # (libllama), so a missing or broken engine fails HERE, in the shipped build -
+    # before it reaches anyone - rather than silently turning the AI review off.
+    try:
+        import llama_cpp
+
+        llama_cpp.llama_backend_init()
+        _out(f"  AI engine (llama.cpp {getattr(llama_cpp, '__version__', '?')}): OK")
+    except Exception as exc:  # noqa: BLE001
+        _out(f"FAIL: AI engine: {type(exc).__name__}: {exc}")
+        _out(traceback.format_exc())
+        result_path.write_text("\n".join(lines), encoding="utf-8")
+        return 1
+
     _out("Self-test PASSED - the frozen build's detection pipeline works.")
     result_path.write_text("\n".join(lines), encoding="utf-8")
     _out(f"(This result was also written to: {result_path})")

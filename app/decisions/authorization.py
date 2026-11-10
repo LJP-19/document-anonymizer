@@ -263,7 +263,26 @@ def confirmed_name_words(candidates: Iterable[Candidate]) -> set:
             words.update(_name_words(c.text))
         elif c.pii_type in _ADDRESS_FAMILY:
             words.update(_ADDR_PREFIX + t for t in _address_tokens(c.text))
+        elif c.pii_type in SPECIFIC_IDS:
+            digits = re.sub(r"\D", "", c.text)
+            if len(digits) >= _MIN_ID_DIGITS:
+                words.add(_ID_PREFIX + digits)
     return words
+
+
+_ID_PREFIX = "id:"
+_MIN_ID_DIGITS = 6
+
+
+def _same_confirmed_identifier(c: Candidate, confirmed_words: set) -> bool:
+    """The same digits as an identifier a LABEL confirmed: "512487391" in a
+    reference line is the SSN "512-48-7391" its own field confirmed, however it is
+    punctuated (0.43.0 - it was held because GLiNER called the bare digits a ZIP).
+    Pseudonyms are already keyed by digits, so it gets the same replacement."""
+    if c.pii_type not in SPECIFIC_IDS or c.source is Source.MANUAL or not confirmed_words:
+        return False
+    digits = re.sub(r"\D", "", c.text)
+    return len(digits) >= _MIN_ID_DIGITS and _ID_PREFIX + digits in confirmed_words
 
 
 def _made_of_confirmed_address(c: Candidate, confirmed_words: set) -> bool:
@@ -367,6 +386,10 @@ def assess(c: Candidate, confirmed_words: Optional[set] = None) -> Assessment:
             any(p.startswith(d) for d in LABEL_RESOLVABLE_DOUBTS) for p in parts)
         settled = (detector_doubt_only and confirmed_words and _made_of_confirmed_names(c, confirmed_words)
                    and _unmistakably_the_person(c, confirmed_words))
+        # The same digits as a label-confirmed identifier settle a DETECTOR'S doubt
+        # about the type ("SSN vs POSTAL_CODE"), never an AI objection or validator.
+        if not settled and detector_doubt_only and _same_confirmed_identifier(c, confirmed_words):
+            settled = True
         # An IRS name control (first 4 letters of the surname on a scanline) is
         # only ever produced from a subject a label confirmed; its flag says where
         # it came from, it is not doubt. Left readable, "QUIL" beside a replaced
@@ -419,6 +442,8 @@ def assess(c: Candidate, confirmed_words: Optional[set] = None) -> Assessment:
         return Assessment(True, "made only of a label-confirmed person's name words")
     if confirmed_words and _made_of_confirmed_address(c, confirmed_words):
         return Assessment(True, "made only of a label-confirmed address's words")
+    if _same_confirmed_identifier(c, confirmed_words or set()):
+        return Assessment(True, "the same digits as a label-confirmed identifier")
     adjudication = getattr(c, "adjudication", "") or ""
     if adjudication in ("UNRESOLVED", "PROBABLE"):
         return Assessment(False, f"evidence is {adjudication.lower()}, not confirmed")

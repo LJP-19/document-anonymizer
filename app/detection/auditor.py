@@ -1017,6 +1017,26 @@ def _auditor() -> LlmAuditor:
     return LlmAuditor()
 
 
+def reset_model() -> None:
+    """Forget the loaded model so the next analysis loads the CURRENT selection.
+
+    _auditor() is cached for the whole process: without this, choosing another
+    model in Settings kept the old one in memory (and in use) until a restart.
+    """
+    try:
+        if _auditor.cache_info().currsize:
+            old = _auditor()
+            llm = getattr(old, "_llm", None)
+            old._llm = None
+            if llm is not None and hasattr(llm, "close"):
+                try:
+                    llm.close()
+                except Exception:  # noqa: BLE001 - freeing memory is best effort
+                    pass
+    finally:
+        _auditor.cache_clear()
+
+
 # --- keeping the model phase bounded, visible and stoppable ------------------
 #
 # Reported by a user: analysis "stuck for more than an hour" on the smallest
@@ -1208,7 +1228,7 @@ def llm_audit_enabled() -> bool:
     try:
         from .. import settings
 
-        if settings.get("ai_review") is False:
+        if settings.get("ai_review") is False or settings.fast_mode():
             return False
         return LlmAuditor().configured
     except Exception:  # noqa: BLE001 - a default must never break analysis

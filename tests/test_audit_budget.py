@@ -235,13 +235,19 @@ def test_progress_text_reaches_the_status_line_only_while_analysing(window):
     assert "return.pdf" in detail and "AI check: page 2 of 9" in detail
 
 
-def test_the_skip_button_exists_hidden_and_only_shows_when_the_audit_is_on(window):
+def test_the_skip_button_exists_hidden_and_only_shows_when_the_audit_is_on(window, monkeypatch):
     from unittest.mock import patch
 
     assert window.skip_ai_button.isHidden()
+    monkeypatch.setenv("DOCANON_SECOND_PASS", "0")      # no optional extra at all
     with patch.object(auditor, "llm_audit_enabled", return_value=False):
         window._begin_ai_review_ui()
     assert window.skip_ai_button.isHidden()
+    monkeypatch.setenv("DOCANON_SECOND_PASS", "1")      # the re-check alone can be skipped
+    with patch.object(auditor, "llm_audit_enabled", return_value=False):
+        window._begin_ai_review_ui()
+    assert not window.skip_ai_button.isHidden() and window.skip_ai_button.text() == "Skip re-check"
+    window._end_ai_review_ui()
     with patch.object(auditor, "llm_audit_enabled", return_value=True):
         window._begin_ai_review_ui()
     assert not window.skip_ai_button.isHidden()

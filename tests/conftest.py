@@ -72,3 +72,18 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     return home
+
+
+@pytest.fixture(autouse=True)
+def _no_leftover_skip_request():
+    """The Skip flag is process-wide (the window sets it, analysis reads it). A
+    test that presses Skip must not make a LATER test's analysis skip its
+    re-check - reset it around every test."""
+    try:
+        from app.detection import auditor
+    except Exception:  # noqa: BLE001
+        yield
+        return
+    auditor.reset_stop()
+    yield
+    auditor.reset_stop()

@@ -162,3 +162,32 @@ def _download_file(
         )
     tmp.replace(dest)
     return True
+
+
+def downloaded_bytes(choice: LlmChoice) -> int:
+    """Bytes this model occupies on disk, finished files and partial downloads."""
+    total = 0
+    for model_file in choice.files:
+        for path in (file_path(model_file), file_path(model_file).with_suffix(
+                file_path(model_file).suffix + ".part")):
+            try:
+                total += path.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def delete_model(choice: LlmChoice) -> int:
+    """Remove a model's files (and any partial download). Returns bytes freed.
+    Never touches another model's files or the selection marker."""
+    freed = 0
+    for model_file in choice.files:
+        for path in (file_path(model_file), file_path(model_file).with_suffix(
+                file_path(model_file).suffix + ".part")):
+            try:
+                size = path.stat().st_size
+                path.unlink()
+                freed += size
+            except OSError:
+                pass
+    return freed

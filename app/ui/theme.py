@@ -62,6 +62,9 @@ def rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({r}, {g}, {b}, {alpha:.2f})"
 
 
+WARN_BG = rgba(WARN, 0.12)
+WARN_BORDER = rgba(WARN, 0.45)
+
 STYLESHEET = f"""
 QWidget {{
     background: {BG};
@@ -119,6 +122,38 @@ QPushButton#Ghost {{
     padding: 5px 10px;
 }}
 QPushButton#Ghost:hover {{ background: {SURFACE_2}; color: {TEXT}; }}
+
+QPushButton#Warning {{
+    background: {WARN_BG};
+    border: 1px solid {WARN_BORDER};
+    color: {WARN};
+    text-align: left;
+    font-weight: 600;
+}}
+QPushButton#Warning:hover {{ border-color: {WARN}; }}
+
+QCheckBox, QRadioButton {{ spacing: 7px; }}
+QCheckBox::indicator, QRadioButton::indicator {{
+    width: 15px; height: 15px;
+    border: 1px solid {TEXT_FAINT};
+    background: {SURFACE_2};
+}}
+QCheckBox::indicator {{ border-radius: 3px; }}
+QRadioButton::indicator {{ border-radius: 8px; }}
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {{ border-color: {ACCENT}; }}
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
+    background: {ACCENT}; border-color: {ACCENT};
+}}
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
+    background: {SURFACE}; border-color: {BORDER};
+}}
+QCheckBox:disabled, QRadioButton:disabled {{ color: {TEXT_FAINT}; }}
+QGroupBox {{
+    border: 1px solid {BORDER}; border-radius: 8px;
+    margin-top: 14px;
+    font-weight: 600;
+}}
+QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; }}
 
 #Sidebar {{ background: {SURFACE}; border-right: 1px solid {BORDER}; }}
 

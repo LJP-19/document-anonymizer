@@ -1047,9 +1047,9 @@ def conservative_mode() -> bool:
     transformed: matched rules, model hits above threshold, and values in
     fields whose label names them. Recall drops. Nothing gets mangled.
     """
-    import os
+    from .. import settings
 
-    return os.environ.get("DOCANON_CONSERVATIVE", "0") in ("1", "true", "yes")
+    return settings.careful_mode()
 
 
 def _conservative_filter(candidates: list) -> tuple[list, int]:

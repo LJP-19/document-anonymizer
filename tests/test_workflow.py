@@ -861,3 +861,25 @@ def test_the_macos_bundle_signature_is_resealed_after_info_plist_is_edited():
     run = step["run"]
     verify = run.index("codesign --verify")
     assert verify < run.index('if [ "$2" = "signed" ]'), "the UNSIGNED copy must be verified too"
+
+
+def test_self_test_fails_when_the_bundled_ai_engine_cannot_load(monkeypatch):
+    """0.43.0: the Mac build never loaded the AI engine before shipping - a broken
+    or missing llama.cpp would only have shown up as the AI review silently
+    switching itself off on someone's machine. The frozen self-test (run on the
+    built .app and .exe in CI) now loads it and fails the build otherwise."""
+    import builtins
+
+    from app import main as main_module
+
+    real_import = builtins.__import__
+
+    def no_engine(name, *args, **kwargs):
+        if name == "llama_cpp":
+            raise ImportError("libllama.dylib not found")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_engine)
+    assert main_module._self_test() == 1
+    content = (main_module._log_path().parent / "self-test-result.txt").read_text()
+    assert "AI engine" in content and "libllama" in content

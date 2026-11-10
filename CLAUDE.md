@@ -2768,3 +2768,43 @@ build fails otherwise), and the DMG step verifies every copied app. This is not 
 Developer ID signature: the DMG stays -UNSIGNED and Gatekeeper still asks once
 (System Settings > Privacy & Security > Open Anyway). Any future edit inside the
 .app after PyInstaller must be followed by the reseal.
+
+## 0.43.0: Settings, Fast mode, Check leftovers, Skip covers the re-check
+
+- **`app/settings.py` typed preferences**: `fast_mode()`, `careful_mode()`,
+  `output_folder()`. An environment variable, when set, wins (DOCANON_FAST,
+  DOCANON_CONSERVATIVE, DOCANON_SECOND_PASS, DOCANON_LLM); otherwise the saved
+  choice. `engine.conservative_mode()` reads the setting - the window no longer
+  writes os.environ (an env var it set would have overridden the saved choice).
+- **Fast mode = skip the AI review and the second pass, nothing else.** Measured
+  before offering it: forms (233/233), FP (0 of 440) and golden (0 of 18) benchmarks
+  identical with DOCANON_SECOND_PASS=0 - second-pass findings only join the review
+  list. Do not let Fast mode skip any layer that decides what is redacted. Batching
+  spaCy (nlp.pipe) was measured too: no gain (8.6 s vs 8.9 s), not done.
+- **`Session.find_leftovers()`** (Check leftovers, also auto-run on entering final
+  review): every value that will be changed and each PERSON name part, searched
+  with the same rules as Find (`_hits` over one `_search_index()` - folded once, so
+  hundreds of values take milliseconds); reports occurrences that are `undetected`
+  or `kept` (held/kept), never `protected` form text, never amount-shaped values.
+  `search_occurrences` uses the same `_hits` - one implementation.
+- **Same digits as a label-confirmed identifier is that identifier**
+  (`authorization._same_confirmed_identifier`, "id:" + digits in
+  `confirmed_name_words`, >= 6 digits): settles only a DETECTOR's doubt (GLiNER
+  "zip code" on a bare SSN), never an AI objection or a failed validator.
+- **`auditor.reset_model()`** after a model switch: `_auditor()` is lru_cached per
+  process. Never call it while an analysis may be using the model - the Settings
+  window disables Change AI model while `_analysing_name` is set, and deleting
+  unused models never resets the loaded one.
+- **Skip**: the button shows when the AI review OR the second pass is on ("Skip re-
+  check"); `session.analyse` does not start the second pass once a stop was
+  requested, and says so in the warnings. tests/conftest.py resets the process-wide
+  stop flag around every test.
+- **macOS menu**: a key bound to both a QShortcut and a menu QAction is ambiguous
+  and fires neither - on darwin the Add files/Add folder/Settings keys live on the
+  File-menu actions only; Settings has the Preferences role (moved to the app menu).
+- **Self-test loads the bundled llama.cpp** (`llama_backend_init`) - a broken engine
+  fails the frozen build instead of the AI review silently turning itself off.
+  Still NOT tested in CI: loading a real model in the frozen app (no model ships).
+- QGroupBox stylesheet padding is not counted when Qt sizes the box: spacing lives
+  in the layout (`settings_dialog._box`), and non-wrapping hint labels are pinned to
+  their size hint on show - otherwise explanation lines were clipped.

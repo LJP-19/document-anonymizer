@@ -68,7 +68,7 @@ from ..decisions.manager import DecisionState, OccurrenceGroup
 from ..session import Status
 from ..version import APP_NAME, __version__
 from . import theme
-from .dialogs import AddPiiDialog, EditDetectionDialog, FindResultsDialog, UnreviewedPrompt
+from .dialogs import AddPiiDialog, EditDetectionDialog, FindResultsDialog, LeftoversDialog, UnreviewedPrompt
 from .widgets import KEEP, REDACT, DetectionCard, DocumentView, TaskRunner, stop_all_runners
 
 log = logging.getLogger(__name__)
@@ -312,6 +312,14 @@ class DocumentTab(QWidget):
         self.final_summary.setWordWrap(True)
         column.addWidget(self.final_summary)
 
+        # Run automatically on entering final review: anything still readable of a
+        # value being changed elsewhere is the last thing to catch before writing.
+        self.final_leftovers = QPushButton("")
+        self.final_leftovers.setObjectName("Warning")
+        self.final_leftovers.setVisible(False)
+        self.final_leftovers.clicked.connect(self.check_leftovers)
+        column.addWidget(self.final_leftovers)
+
         self.final_list_area = QScrollArea()
         self.final_list_area.setWidgetResizable(True)
         self.final_list_host = QWidget()
@@ -446,6 +454,15 @@ class DocumentTab(QWidget):
         find_black.clicked.connect(self.search_and_blackout)
         strip.addWidget(find_pseudo)
         strip.addWidget(find_black)
+
+        self.leftovers_button = QPushButton("Check leftovers")
+        self.leftovers_button.setToolTip(
+            "Is any occurrence of a value being changed still readable somewhere?\n"
+            "Checks every value and each part of a person's name, on every page. Changes nothing."
+        )
+        self.leftovers_button.clicked.connect(self.check_leftovers)
+        strip.addWidget(self.leftovers_button)
+        self._leftovers_dialog = None
 
         self.final_button = QPushButton("Go to final review \u203a")
         self.final_button.setObjectName("Primary")
@@ -764,6 +781,8 @@ class DocumentTab(QWidget):
         self.final_button.setText(
             "\u2039 Back to review" if enabled else "Go to final review \u203a"
         )
+        if enabled:
+            self._refresh_final_leftovers()
         self.changed.emit()
         if enabled:
             fade_in(self.right_canvas, 220)
@@ -806,6 +825,60 @@ class DocumentTab(QWidget):
 
     def find_in_document(self) -> None:
         self._guard("Find", self._find_in_document)
+
+    # -- leftover check ------------------------------------------------------
+
+    def check_leftovers(self) -> None:
+        self._guard("Check leftovers", self._check_leftovers)
+
+    def _check_leftovers(self) -> None:
+        if not self.session or not self.session.detection:
+            return
+        leftovers = self.session.find_leftovers()
+        if self._leftovers_dialog is None:
+            dialog = LeftoversDialog(self)
+            dialog.hit_chosen.connect(self._show_leftover)
+            dialog.redact_values.connect(self._redact_leftovers)
+            dialog.recheck_button.clicked.connect(self.check_leftovers)
+            dialog.closed.connect(self._clear_find_highlights)
+            self._leftovers_dialog = dialog
+        self._leftovers_dialog.show_results(leftovers)
+        self._leftovers_dialog.show()
+        self._leftovers_dialog.raise_()
+        self._refresh_final_leftovers(leftovers)
+
+    def _show_leftover(self, hit) -> None:
+        self._find_hits = [hit]
+        if hit.page_no not in self.left_canvas.views:
+            self.selected_key = None
+            self.rebuild_views()
+        self._set_find_highlights(0)
+        QTimer.singleShot(0, lambda: self._scroll_both(hit.page_no, hit.rect))
+        QTimer.singleShot(180, lambda: self._scroll_both(hit.page_no, hit.rect))
+
+    def _redact_leftovers(self, values: list) -> None:
+        def run() -> None:
+            for value in values:
+                self.session.add_manual_text(value)
+            self._after_decision()
+            self._check_leftovers()
+        self._guard("Redact leftovers", run)
+
+    def _refresh_final_leftovers(self, leftovers: Optional[list] = None) -> None:
+        if not getattr(self, "final_review", False) or not self.session or not self.session.detection:
+            self.final_leftovers.setVisible(False)
+            return
+        if leftovers is None:
+            try:
+                leftovers = self.session.find_leftovers()
+            except Exception:  # noqa: BLE001 - a check must never block final review
+                log.exception("leftover check failed")
+                leftovers = []
+        count = sum(len(lo.hits) for lo in leftovers)
+        self.final_leftovers.setVisible(bool(count))
+        self.final_leftovers.setText(
+            f"\u26a0  {count} occurrence(s) of values being changed are still readable \u2014 review"
+        )
 
     def _find_in_document(self) -> None:
         needle = self.search_doc.text().strip()
@@ -1010,6 +1083,7 @@ class DocumentTab(QWidget):
         if getattr(self, "final_review", False):
             self._draw_applied_badges()
             self.rebuild_final_list()
+            self._refresh_final_leftovers()
         self._preview_timer.stop()
         self._refresh_preview()
 
@@ -1415,12 +1489,16 @@ class MainWindow(QMainWindow):
         row.addWidget(label)
         self.output_edit = QLineEdit()
         self.output_edit.setPlaceholderText("Choose where anonymized files are written")
-        default = Path.home() / "Documents" / "Anonymized"
+        from .. import settings
+
+        self._default_output = str(Path.home() / "Documents" / "Anonymized")
+        default = settings.output_folder(self._default_output)
         self.output_edit.setText(str(default))
         self.batch.output_folder = str(default)
         self.output_edit.textChanged.connect(
             lambda text: setattr(self.batch, "output_folder", text.strip() or None)
         )
+        self.output_edit.editingFinished.connect(self._remember_output_folder)
         row.addWidget(self.output_edit, 1)
         browse = QPushButton("Choose\u2026")
         browse.clicked.connect(self.choose_output_folder)
@@ -1441,19 +1519,73 @@ class MainWindow(QMainWindow):
             "Finds less, but will not alter figures or form text.\n"
             "Use Add missed item for anything it leaves behind."
         )
-        import os
-
-        self.conservative_box.setChecked(
-            os.environ.get("DOCANON_CONSERVATIVE", "0") in ("1", "true", "yes")
-        )
+        self.conservative_box.setChecked(settings.careful_mode())
         self.conservative_box.toggled.connect(self._set_conservative)
         row.addWidget(self.conservative_box)
+
+        self.fast_box = QCheckBox("Fast mode")
+        self.fast_box.setToolTip(
+            "Skips the AI review and the re-scan of the redacted result.\n"
+            "The same values are redacted automatically - both only add suggestions\n"
+            "to the review list. Applies to the next document analysed."
+        )
+        self.fast_box.toggled.connect(self._set_fast)
+        row.addWidget(self.fast_box)
+
+        self.settings_button = QPushButton("Settings")
+        self.settings_button.setToolTip("All settings, including Change AI model (Ctrl+, / \u2318,)")
+        self.settings_button.clicked.connect(self.open_settings)
+        row.addWidget(self.settings_button)
+        self._refresh_mode_controls()
         return bar
 
-    def _set_conservative(self, enabled: bool) -> None:
-        import os
+    def _refresh_mode_controls(self) -> None:
+        """Every toolbar switch shows the EFFECTIVE setting (Settings window, saved
+        file or environment variable - whichever decides)."""
+        from .. import settings
 
-        os.environ["DOCANON_CONSERVATIVE"] = "1" if enabled else "0"
+        for box, value, env in (
+            (self.fast_box, settings.fast_mode(), "DOCANON_FAST"),
+            (self.conservative_box, settings.careful_mode(), "DOCANON_CONSERVATIVE"),
+        ):
+            box.blockSignals(True)
+            box.setChecked(value)
+            locked = settings._env_flag(env) is not None
+            box.setEnabled(not locked)
+            box.blockSignals(False)
+        self._refresh_ai_review_box()
+        if not self._analysing_name_safe():
+            self.subtitle_label.setText(_build_summary())
+
+    def _analysing_name_safe(self) -> str:
+        return getattr(self, "_analysing_name", "")
+
+    def open_settings(self) -> None:
+        from .settings_dialog import SettingsDialog
+
+        # _analysing_name is set for exactly as long as a document is being analysed.
+        dialog = SettingsDialog(self, default_output=self._default_output,
+                                busy=bool(self._analysing_name_safe()))
+        dialog.changed.connect(self._refresh_mode_controls)
+        dialog.exec()
+        self._refresh_mode_controls()
+
+    def _set_fast(self, enabled: bool) -> None:
+        from .. import settings
+
+        try:
+            settings.put("fast_mode", bool(enabled))
+        except OSError:
+            log.exception("could not save Fast mode")
+        self._refresh_mode_controls()
+
+    def _set_conservative(self, enabled: bool) -> None:
+        from .. import settings
+
+        try:
+            settings.put("careful_mode", bool(enabled))
+        except OSError:
+            log.exception("could not save Careful mode")
         if self.batch.items:
             QMessageBox.information(
                 self, "Applies to the next analysis",
@@ -1507,10 +1639,45 @@ class MainWindow(QMainWindow):
         row.addWidget(self.process_button)
         return footer
 
+    def _remember_output_folder(self) -> None:
+        from .. import settings
+
+        text = self.output_edit.text().strip()
+        if text:
+            try:
+                settings.put("output_folder", text)
+            except OSError:
+                log.exception("could not save the output folder")
+
     def _shortcuts(self) -> None:
-        for keys, slot in (
-            ("Ctrl+O", self.add_files),
-            ("Ctrl+Shift+O", self.add_folder),
+        # Qt maps "Ctrl" to the Command key on macOS, so these are Cmd+O etc. there.
+        import sys
+
+        menu_keys = (
+            ("Add files\u2026", "Ctrl+O", self.add_files, None),
+            ("Add folder\u2026", "Ctrl+Shift+O", self.add_folder, None),
+            ("Settings\u2026", "Ctrl+,", self.open_settings, "preferences"),
+        )
+        if sys.platform == "darwin":
+            # The native menu bar. A key bound both to a QShortcut and to a menu
+            # action is "ambiguous" to Qt and then fires NEITHER, so on macOS these
+            # keys live on the menu actions only. Settings... carries the
+            # Preferences role, which Qt moves to the application menu (Cmd+,),
+            # where every Mac app keeps it.
+            from PySide6.QtGui import QAction
+
+            menu = self.menuBar().addMenu("File")
+            for text, keys, slot, role in menu_keys:
+                action = QAction(text, self)
+                action.setShortcut(QKeySequence(keys))
+                if role == "preferences":
+                    action.setMenuRole(QAction.MenuRole.PreferencesRole)
+                action.triggered.connect(lambda _checked=False, f=slot: f())
+                menu.addAction(action)
+            plain = ()
+        else:
+            plain = tuple((keys, slot) for _t, keys, slot, _r in menu_keys)
+        for keys, slot in plain + (
             ("Ctrl+E", self.process),
             ("Escape", self._clear_focus),
         ):
@@ -1572,6 +1739,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_ai_review_box(self) -> None:
         """Show the EFFECTIVE state, and say why when it cannot be changed."""
+        from .. import settings
         from ..detection import auditor
 
         box = self.ai_review_box
@@ -1587,6 +1755,10 @@ class MainWindow(QMainWindow):
                 box.setChecked(False)
                 box.setEnabled(False)
                 box.setToolTip("No AI model is ready, so there is nothing to switch on.")
+            elif settings.fast_mode():
+                box.setChecked(False)
+                box.setEnabled(False)
+                box.setToolTip("Fast mode skips the AI review. Turn Fast mode off to use it.")
             else:
                 box.setChecked(auditor.llm_audit_enabled())
                 box.setEnabled(True)
@@ -1611,12 +1783,17 @@ class MainWindow(QMainWindow):
 
 
     def _begin_ai_review_ui(self) -> None:
+        """Skip ends the OPTIONAL extras of the current document - the AI review and
+        the re-check of the redacted result. Every layer that decides what is
+        redacted always completes."""
         from ..detection import auditor
+        from ..session import second_pass_enabled
 
         auditor.reset_stop()
+        ai = auditor.llm_audit_enabled()
         self.skip_ai_button.setEnabled(True)
-        self.skip_ai_button.setText("Skip AI review")
-        self.skip_ai_button.setVisible(auditor.llm_audit_enabled())
+        self.skip_ai_button.setText("Skip AI review" if ai else "Skip re-check")
+        self.skip_ai_button.setVisible(ai or second_pass_enabled())
 
     def _end_ai_review_ui(self) -> None:
         self.skip_ai_button.setVisible(False)
@@ -1625,14 +1802,16 @@ class MainWindow(QMainWindow):
     def _skip_ai_review(self) -> None:
         from ..detection import auditor
 
+        ai = self.skip_ai_button.text() == "Skip AI review"
         auditor.request_stop()
         self.skip_ai_button.setEnabled(False)
         self.skip_ai_button.setText("Stopping")
         if self._analysing_name:
             self._set_status(
                 Status.ANALYZING,
-                f"Analyzing {self._analysing_name} - stopping the AI review "
-                "(what it already found is kept)",
+                f"Analyzing {self._analysing_name} - "
+                + ("stopping the AI review (what it already found is kept)" if ai
+                   else "skipping the re-check of the redacted result"),
             )
 
     def _on_audit_progress(self, text: str) -> None:
@@ -1680,6 +1859,12 @@ class MainWindow(QMainWindow):
     def _close_tab(self, index: int) -> None:
         tab = self.tabs.widget(index)
         if isinstance(tab, DocumentTab):
+            if tab.item.state is ItemState.ANALYZING:
+                # Its analysis cannot be killed mid-step, but its optional extras
+                # (the AI review, the re-check) need not run for a closed document.
+                from ..detection import auditor
+
+                auditor.request_stop()
             tab.stop()
             self.batch.remove(tab.item)
             self.tabs_by_item.pop(tab.item.source_path, None)
@@ -1750,6 +1935,7 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Choose an output folder")
         if folder:
             self.output_edit.setText(folder)
+            self._remember_output_folder()
 
     def open_output_folder(self) -> None:
         folder = self.batch.output_folder

@@ -53,10 +53,16 @@ def _as_pii_type(value):
 
 
 def second_pass_enabled() -> bool:
-    """On by default. DOCANON_SECOND_PASS=0 turns it off for speed."""
-    import os
+    """On by default. DOCANON_SECOND_PASS=0/1 decides when set; otherwise Fast mode
+    turns it off. Its findings only ever join the review list - nothing it finds is
+    applied automatically - so skipping it changes no automatic redaction (measured:
+    identical results on all three benchmark sets, 0.43.0)."""
+    from . import settings
 
-    return os.environ.get("DOCANON_SECOND_PASS", "1") not in ("0", "false", "no")
+    explicit = settings._env_flag("DOCANON_SECOND_PASS")
+    if explicit is not None:
+        return explicit
+    return not settings.fast_mode()
 
 
 class Status:
@@ -97,6 +103,20 @@ class SearchHit:
         prefix = "\u2026" if self.start > 40 else ""
         suffix = "\u2026" if len(self.line_text) > self.end + 40 else ""
         return f"{prefix}{left}[{self.line_text[self.start:self.end]}]{right}{suffix}"
+
+
+@dataclass
+class Leftover:
+    """A value being redacted elsewhere that is still readable somewhere."""
+
+    value: str
+    pii_type: str
+    name_part: bool          # a first name / surname of a person, searched on its own
+    hits: list = field(default_factory=list)
+
+    @property
+    def undetected(self) -> int:
+        return sum(1 for h in self.hits if h.status == "undetected")
 
 
 class _Span:
@@ -168,8 +188,19 @@ class AnonymizationSession:
         )
         # Second pass: build the transformed document and look for anything
         # still identifying. Findings join the review list; nothing is applied.
-        if second_pass_enabled():
+        # Skip (in the window) ends the optional extras: a press during the AI
+        # review also skips this re-scan, and a press during the re-scan is
+        # honoured before it starts. Its findings would only have joined the
+        # review list, so skipping it changes no automatic redaction.
+        from .detection import auditor as _auditor
+
+        if second_pass_enabled() and not _auditor.stop_requested():
+            _auditor._report("re-checking the redacted result\u2026")
             self.run_second_pass()
+        elif second_pass_enabled():
+            self.detection.warnings.append(
+                "the re-check of the redacted result was skipped at your request"
+            )
 
         self.status = self._derive_status()
         return self.detection
@@ -516,46 +547,126 @@ class AnonymizationSession:
         "José Núñez"), and a number matches however it is punctuated (123456789 finds
         123-45-6789).
         """
-        from .detection.textnorm import find_occurrences
-
-        needle = " ".join(needle.split()).strip()
-        if not needle or self.document is None:
+        if self.document is None:
             return []
-        digits = re.sub(r"\D", "", needle)
-        numeric = len(digits) >= 5 and len(digits) >= 0.6 * len(re.sub(r"\s", "", needle))
+        return self._hits(" ".join(needle.split()).strip(), self._search_index())
+
+    def _search_index(self) -> dict:
+        """Per-line folded text, candidates by line and the protection index, built
+        once so a document-wide check over hundreds of values stays fast."""
+        from .detection.textnorm import fold_with_map
+
+        lines = []
+        for page in self.document.pages:
+            for line in page.lines:
+                folded, mapping = fold_with_map(line.text)
+                lines.append((page.number, line, folded, mapping))
         by_line: dict = {}
         for c in (self.detection.candidates if self.detection else []):
             by_line.setdefault(c.line.key(), []).append(c)
-
         protection = getattr(self.detection, "protection", None) if self.detection else None
+        return {"lines": lines, "by_line": by_line, "protection": protection}
+
+    def _hits(self, needle: str, index: dict) -> list["SearchHit"]:
+        from .detection.textnorm import fold
+
+        if not needle:
+            return []
+        wanted = fold(needle)
+        digits = re.sub(r"\D", "", needle)
+        numeric = len(digits) >= 5 and len(digits) >= 0.6 * len(re.sub(r"\s", "", needle))
         hits: list[SearchHit] = []
-        for page in self.document.pages:
-            for line in page.lines:
-                spans = set(find_occurrences(line.text, needle))
-                if numeric:
-                    for m in re.finditer(r"\d[\d\-\s.]{3,}\d", line.text):
-                        if re.sub(r"\D", "", m.group()) == digits:
-                            spans.add((m.start(), m.end()))
-                for start, end in sorted(spans):
-                    rect = line.rect_for(start, end)
-                    if rect is None:
-                        continue
-                    over = [c for c in by_line.get(line.key(), []) if c.start < end and start < c.end]
-                    live = [c for c in over if self.decisions.is_actionable(c)]
-                    chosen = (live or over or [None])[0]
-                    status = "redacted" if live else ("kept" if over else "undetected")
-                    label = chosen.pii_type.value if chosen is not None else ""
-                    if status == "undetected" and protection is not None:
-                        # Not a miss: the form's own label, a figure or a form number,
-                        # which are kept on purpose. Say so, so it is not mistaken for one.
-                        covering = [r for r in protection.regions_for(line) if r.overlaps(start, end)]
-                        if covering:
-                            status, label = "protected", covering[0].kind.value
-                    hits.append(SearchHit(
-                        page_no=page.number, rect=rect, start=start, end=end, line_text=line.text,
-                        candidate=chosen, status=status, pii_type=label,
-                    ))
+        for page_no, line, folded, mapping in index["lines"]:
+            spans = set()
+            if wanted:
+                position = 0
+                while True:
+                    at = folded.find(wanted, position)
+                    if at == -1:
+                        break
+                    position = at + 1
+                    start, end = mapping[at], mapping[at + len(wanted) - 1] + 1
+                    before = line.text[start - 1] if start > 0 else ""
+                    after = line.text[end] if end < len(line.text) else ""
+                    if not ((before and before.isalnum()) or (after and after.isalnum())):
+                        spans.add((start, end))
+            if numeric:
+                for m in re.finditer(r"\d[\d\-\s.]{3,}\d", line.text):
+                    if re.sub(r"\D", "", m.group()) == digits:
+                        spans.add((m.start(), m.end()))
+            for start, end in sorted(spans):
+                rect = line.rect_for(start, end)
+                if rect is None:
+                    continue
+                over = [c for c in index["by_line"].get(line.key(), []) if c.start < end and start < c.end]
+                live = [c for c in over if self.decisions.is_actionable(c)]
+                chosen = (live or over or [None])[0]
+                status = "redacted" if live else ("kept" if over else "undetected")
+                label = chosen.pii_type.value if chosen is not None else ""
+                if status == "undetected" and index["protection"] is not None:
+                    # Not a miss: the form's own label, a figure or a form number,
+                    # which are kept on purpose. Say so, so it is not mistaken for one.
+                    covering = [r for r in index["protection"].regions_for(line) if r.overlaps(start, end)]
+                    if covering:
+                        status, label = "protected", covering[0].kind.value
+                hits.append(SearchHit(
+                    page_no=page_no, rect=rect, start=start, end=end, line_text=line.text,
+                    candidate=chosen, status=status, pii_type=label,
+                ))
         return sorted(hits, key=lambda h: (h.page_no, h.rect[1], h.rect[0]))
+
+    def find_leftovers(self) -> list["Leftover"]:
+        """Is any occurrence of a value being redacted still readable?
+
+        For every value that WILL be changed (and, for a person, each part of the
+        name on its own), every occurrence in the document that nothing is redacting:
+        never detected, detected but held for review, or kept by the user. Form text
+        (labels, figures, form numbers) is never reported - it is kept on purpose.
+        Amount-shaped values are never searched for: they are never changed.
+
+        Read-only; one entry per searched value, its occurrences in page order.
+        """
+        from .decisions.authorization import is_amount_shaped
+        from .detection.heuristics import FORM_VOCABULARY
+        from .detection.textnorm import fold, looks_like_name_token
+
+        if self.document is None or self.detection is None:
+            return []
+        values: dict[str, tuple[str, str, bool]] = {}   # fold -> (text, type, name part)
+
+        def add(text: str, kind: str, part: bool) -> None:
+            text = " ".join(text.split()).strip(" ,.;:()")
+            key = fold(text)
+            if len(key) < 2 or is_amount_shaped(text):
+                return
+            if key not in values or (values[key][2] and not part):
+                values[key] = (text, kind, part)
+
+        for c in self.detection.candidates:
+            if not self.decisions.is_actionable(c):
+                continue
+            add(c.text, c.pii_type.value, False)
+            if c.pii_type is PiiType.PERSON:
+                for token in re.split(r"[\s,&]+", c.text):
+                    token = re.sub(r"['\u2019]s$", "", token.strip(".,;:()"))
+                    if (len(token) >= 2 and looks_like_name_token(token)
+                            and token.lower() not in FORM_VOCABULARY):
+                        add(token, PiiType.PERSON.value, True)
+
+        index = self._search_index()
+        reported: set = set()
+        out: list[Leftover] = []
+        for key, (text, kind, part) in sorted(values.items(), key=lambda kv: (kv[1][2], kv[1][0].lower())):
+            open_hits = []
+            for hit in self._hits(text, index):
+                where = (hit.page_no, tuple(round(v, 1) for v in hit.rect))
+                if hit.status not in ("undetected", "kept") or where in reported:
+                    continue
+                reported.add(where)
+                open_hits.append(hit)
+            if open_hits:
+                out.append(Leftover(value=text, pii_type=kind, name_part=part, hits=open_hits))
+        return out
 
     def find_text(self, needle: str) -> list[tuple[int, tuple, str]]:
         """Every occurrence of `needle`, as (page, rect, line text)."""

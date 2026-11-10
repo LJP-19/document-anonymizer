@@ -338,3 +338,108 @@ class FindResultsDialog(QDialog):
     def closeEvent(self, event) -> None:
         self.closed.emit()
         super().closeEvent(event)
+
+
+class LeftoversDialog(QDialog):
+    """Values being redacted elsewhere that are still readable somewhere.
+
+    One row per occurrence, grouped by value. Selecting a row shows it on the page.
+    "Redact this value everywhere" adds every occurrence of the selected value (the
+    same pseudonym as everywhere else); "Redact all listed" does that for all of
+    them. Nothing changes until one of those buttons is pressed.
+    """
+
+    hit_chosen = Signal(object)          # SearchHit
+    redact_values = Signal(list)         # list[str] - values to redact everywhere
+    closed = Signal()
+
+    _STATUS = {"undetected": "NOT detected", "kept": "held for review / kept"}
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Leftover check")
+        self.setModal(False)
+        self.resize(640, 460)
+        self._rows: list = []            # (Leftover, SearchHit) per list row
+        layout = QVBoxLayout(self)
+        self.summary = QLabel("")
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
+        self.list = QListWidget()
+        self.list.currentRowChanged.connect(self._row_changed)
+        layout.addWidget(self.list, 1)
+        note = QLabel(
+            "Checked: every value that will be changed, and each part of a person's name on "
+            "its own. Form labels, figures and amounts are never listed - they are kept on purpose."
+        )
+        note.setWordWrap(True)
+        note.setObjectName("CardMeta")
+        layout.addWidget(note)
+        row = QHBoxLayout()
+        self.recheck_button = QPushButton("Check again")
+        self.redact_one_button = QPushButton("Redact this value everywhere")
+        self.redact_all_button = QPushButton("Redact all listed")
+        self.redact_all_button.setObjectName("Primary")
+        self.redact_one_button.clicked.connect(self._redact_selected)
+        self.redact_all_button.clicked.connect(
+            lambda _checked=False: self.redact_values.emit(sorted({lo.value for lo, _h in self._rows})))
+        row.addWidget(self.recheck_button)
+        row.addStretch(1)
+        row.addWidget(self.redact_one_button)
+        row.addWidget(self.redact_all_button)
+        layout.addLayout(row)
+
+    def show_results(self, leftovers: list) -> None:
+        self.list.blockSignals(True)
+        self.list.clear()
+        self._rows = []
+        for leftover in leftovers:
+            what = f"{leftover.value}" + ("  (part of a name)" if leftover.name_part else "")
+            for hit in leftover.hits:
+                label = self._STATUS.get(hit.status, hit.status)
+                item = QListWidgetItem(
+                    f"{what}   ·   page {hit.page_no + 1}   ·   {label}   ·   {hit.context}"
+                )
+                if hit.status == "undetected":
+                    item.setForeground(QBrush(QColor(200, 90, 0)))
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                self.list.addItem(item)
+                self._rows.append((leftover, hit))
+        self.list.blockSignals(False)
+        total = len(self._rows)
+        undetected = sum(1 for _lo, h in self._rows if h.status == "undetected")
+        if not total:
+            self.summary.setText(
+                "No leftovers: every occurrence of every value being changed is covered."
+            )
+        else:
+            self.summary.setText(
+                f"{total} occurrence(s) of {len({lo.value for lo, _h in self._rows})} value(s) "
+                f"being changed elsewhere are still readable — {undetected} never detected, "
+                f"{total - undetected} held for review or kept. Check each one; a name part "
+                "can belong to someone or something else."
+            )
+        self.redact_one_button.setEnabled(bool(total))
+        self.redact_all_button.setEnabled(bool(total))
+        self.setWindowTitle(f"Leftover check — {total} still readable")
+        if total:
+            self.list.setCurrentRow(0)
+
+    def _redact_selected(self) -> None:
+        row = self.list.currentRow()
+        if 0 <= row < len(self._rows):
+            self.redact_values.emit([self._rows[row][0].value])
+
+    def _row_changed(self, row: int) -> None:
+        if 0 <= row < len(self._rows):
+            self.hit_chosen.emit(self._rows[row][1])
+
+    def done(self, result: int) -> None:
+        self.closed.emit()
+        super().done(result)
+
+    def closeEvent(self, event) -> None:
+        self.closed.emit()
+        super().closeEvent(event)

@@ -85,9 +85,13 @@ class ModelPickerDialog(QDialog):
     dialog any other way (the window's own X button, Escape) is treated
     the same as Cancel - there is no silent way past this screen."""
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None, changing: bool = False):
         super().__init__(parent)
-        self.setWindowTitle("Choose a local AI model")
+        #: Opened from Settings to switch models (Cancel keeps the current one),
+        #: rather than the mandatory first-launch choice.
+        self._changing = changing
+        self._previous = get_selected() if changing else None
+        self.setWindowTitle("Change AI model" if changing else "Choose a local AI model")
         self.setMinimumWidth(560)
         self._worker: Optional[_DownloadWorker] = None
         self._pending_choice: Optional[LlmChoice] = None
@@ -96,6 +100,10 @@ class ModelPickerDialog(QDialog):
         layout = QVBoxLayout(self)
 
         intro = QLabel(
+            "Choose the AI model for the AI review. A model not yet on this computer is "
+            "downloaded now (once); models already downloaded switch instantly. It runs "
+            "entirely on this machine - documents are never sent anywhere."
+            if changing else
             "Document Anonymizer uses a local AI model to double-check detection "
             "on ambiguous cases - never sent anywhere, runs entirely on this "
             "machine. Pick one below and it will be downloaded now."
@@ -124,6 +132,10 @@ class ModelPickerDialog(QDialog):
             text = f"{choice.label} - {choice.size_gb:.1f} GB"
             if choice.id == recommended.id:
                 text += "  (recommended for this machine)"
+            if self._previous is not None and choice.id == self._previous.id:
+                text += "  (current)"
+            elif changing and is_downloaded(choice):
+                text += "  (downloaded)"
             button = QRadioButton(text)
             button.setToolTip(choice.description)
             desc = QLabel(choice.description)
@@ -133,7 +145,8 @@ class ModelPickerDialog(QDialog):
             layout.addWidget(desc)
             self._group.addButton(button)
             self._buttons[choice.id] = button
-            if choice.id == recommended.id:
+            current = self._previous.id if self._previous is not None else recommended.id
+            if choice.id == current:
                 button.setChecked(True)
 
         self._progress = QProgressBar()
@@ -149,7 +162,7 @@ class ModelPickerDialog(QDialog):
         self._cancel_button = QPushButton("Cancel")
         self._cancel_button.clicked.connect(self._on_cancel_clicked)
         button_row.addWidget(self._cancel_button)
-        self._download_button = QPushButton("Download and continue")
+        self._download_button = QPushButton("Switch model" if changing else "Download and continue")
         self._download_button.setDefault(True)
         self._download_button.clicked.connect(self._on_download_clicked)
         button_row.addWidget(self._download_button)
@@ -170,6 +183,9 @@ class ModelPickerDialog(QDialog):
     def _on_download_clicked(self) -> None:
         choice = self._selected_choice()
         if choice is None:
+            return
+        if self._changing and self._previous is not None and choice.id == self._previous.id:
+            self.reject()          # nothing to change
             return
         if is_downloaded(choice):
             set_selected(choice)

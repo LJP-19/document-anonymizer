@@ -1,3 +1,42 @@
+### What changed in 0.43.0
+
+**Settings window.** One place for every preference: the Settings button in the
+toolbar, Ctrl+, on Windows, or Settings... in the application menu (Cmd+,) on a Mac.
+Choices are saved as you make them and apply to the next document analysed.
+* **Change AI model** - switch between the downloaded models instantly, or download
+  another one; the next analysis uses it (no restart). "Delete other downloaded
+  models" frees the disk space of models you no longer use. Model changes wait until
+  the current analysis has finished.
+* **Fast mode** (also a toolbar switch) - skips the AI review and the re-check of the
+  redacted result. Both only ever add suggestions to the review list, so the values
+  redacted automatically are the same: on our three test sets the results were
+  identical with Fast mode on. The check of the saved file still runs.
+* Careful mode and the default output folder are now remembered between sessions.
+
+**Check leftovers.** A new button beside Find: is any occurrence of a value being
+changed still readable anywhere? It checks every value that will be changed, and each
+part of a person's name on its own, on every page, and lists what is still readable -
+never detected, or held for review - with Redact this value / Redact all listed. It
+runs automatically when you enter final review and warns if anything is left.
+
+**Skip works for the whole optional part of the analysis.** Skip AI review now also
+skips the re-check of the redacted result (shown as "Skip re-check" when the AI review
+is off). Everything already found is kept; the layers that decide what is redacted
+always finish. Closing a document's tab while it is analysed also stops its extras.
+
+**Fix: the same identifier written differently is replaced automatically.** An SSN
+printed without dashes on another line ("512487391") was held for review although its
+labelled field had confirmed "512-48-7391" - a detection model had called the bare
+digits a ZIP code. The same digits as a confirmed identifier are now that identifier.
+
+**macOS.** Settings sits in the application menu, with Cmd+O / Cmd+Shift+O / Cmd+, on
+the File menu. The built app's self-test now also loads the bundled AI engine, so a
+broken engine fails the build instead of shipping. The app never needs Ollama or any
+other separate install: the engine is inside the app, and only the model file is
+downloaded on first launch.
+
+**Display:** checkboxes and radio buttons are clearly visible in the dark theme.
+
 ### What changed in 0.42.7
 
 **macOS: the app no longer shows "damaged and can't be opened."** Since 0.42.1 the
