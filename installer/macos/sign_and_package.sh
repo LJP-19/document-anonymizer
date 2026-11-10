@@ -18,6 +18,8 @@
 # secret missing it is the only DMG, signing=UNSIGNED,
 # and the missing secret NAMES are listed. Ad-hoc signing is never used as a
 # substitute and nothing is described as notarized unless notarytool accepted it.
+# (build.py keeps PyInstaller's own ad-hoc bundle signature VALID - that is what
+# lets macOS offer "Open Anyway" instead of "damaged" - it is not a substitute.)
 set -euo pipefail
 
 APP="$1"; VERSION="$2"; ARCH="$3"; OUT="$4"

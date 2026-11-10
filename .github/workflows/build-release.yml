@@ -331,8 +331,10 @@ jobs:
             dest="$RUNNER_TEMP/Applications-$2"; rm -rf "$dest"; mkdir -p "$dest"
             cp -R "$mnt/DocumentAnonymizer.app" "$dest/"
             hdiutil detach "$mnt"
+            # Every copy, signed or not, must carry a VALID signature: a broken one is
+            # what macOS reports as "damaged and can't be opened" (0.42.1-0.42.6).
+            codesign --verify --deep --strict --verbose=2 "$dest/DocumentAnonymizer.app"
             if [ "$2" = "signed" ]; then
-              codesign --verify --deep --strict --verbose=2 "$dest/DocumentAnonymizer.app"
               spctl --assess --type execute --verbose=2 "$dest/DocumentAnonymizer.app"
             fi
             "$dest/DocumentAnonymizer.app/Contents/MacOS/DocumentAnonymizer" --self-test
@@ -431,7 +433,7 @@ jobs:
             else
               echo "**No SIGNED-NOTARIZED DMG in this release**: the Apple signing secrets are not configured (missing: ${MISSING:-unknown})."
             fi
-            echo "\`-UNSIGNED.dmg\` is NOT signed or notarized; macOS Gatekeeper blocks it on other Macs (right-click > Open, or see RELEASE_GUIDE.md)."
+            echo "\`-UNSIGNED.dmg\` is NOT signed or notarized, so macOS asks once before the first launch: drag the app to Applications and open it; when macOS says it cannot verify the app, open System Settings > Privacy & Security and click Open Anyway (macOS 14 and earlier: right-click the app > Open). See RELEASE_GUIDE.md."
             echo "The Windows installer is not code-signed; Windows SmartScreen may warn on first run."
             echo
             echo "Verify downloads against SHA256SUMS.txt. Intel Macs are not supported in this release."

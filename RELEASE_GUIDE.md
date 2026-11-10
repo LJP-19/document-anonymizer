@@ -18,7 +18,7 @@ a version tag, which starts this same workflow.)
 |---|---|
 | `DocumentAnonymizer-Setup-vX.Y.Z-Windows-x64.exe` | Windows 10/11 installer (64-bit Intel/AMD). Installs into Program Files, adds a Start menu entry and an uninstaller. |
 | `DocumentAnonymizer-vX.Y.Z-macOS-arm64.dmg` | macOS 13+ on **Apple Silicon** (M1/M2/M3/M4), **signed and notarized**. |
-| `DocumentAnonymizer-vX.Y.Z-macOS-arm64-UNSIGNED.dmg` | The same app when the Apple signing secrets are **not** configured. Not notarized: Gatekeeper blocks it on other Macs. For testing only. |
+| `DocumentAnonymizer-vX.Y.Z-macOS-arm64-UNSIGNED.dmg` | The same app when the Apple signing secrets are **not** configured. Not notarized: macOS asks once before the first launch (System Settings > Privacy & Security > Open Anyway). The build fails if the app's own signature is not valid - a broken one is what macOS calls "damaged". |
 | `SHA256SUMS.txt` | Checksums of the installers. |
 | `build-manifest.json` | Version, exact source commit, workflow run link, macOS signing status, file sizes and checksums. |
 | `RELEASE_NOTES.md` | What changed and known limitations. |

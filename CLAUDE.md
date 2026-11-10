@@ -2755,3 +2755,16 @@ binds only the first column), PTIN typed MRN and held, ZIP held as PROBABLE.
   spouse's first name "employer name" once and every later "Ines" became an ORG, held as
   "detectors disagree" (forms benchmark return_b, the last missed word). A label-confirmed
   company is never retyped.
+
+## 0.42.7: never edit a signed macOS bundle without re-sealing it
+
+`build._stamp_bundle_version` (0.42.1) edited Info.plist AFTER PyInstaller ad-hoc
+signed the .app. The signature covers Info.plist, so it broke, and macOS calls a
+downloaded app with a broken signature "damaged and can't be opened" - no Open
+Anyway, no right-click. 0.42.1-0.42.6 all shipped like that; CI never saw it because
+its copy carries no quarantine flag and only the SIGNED path ran `codesign --verify`.
+`build._reseal_bundle_signature` re-applies the ad-hoc signature and verifies it (the
+build fails otherwise), and the DMG step verifies every copied app. This is not a
+Developer ID signature: the DMG stays -UNSIGNED and Gatekeeper still asks once
+(System Settings > Privacy & Security > Open Anyway). Any future edit inside the
+.app after PyInstaller must be followed by the reseal.

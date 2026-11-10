@@ -1,3 +1,14 @@
+### What changed in 0.42.7
+
+**macOS: the app no longer shows "damaged and can't be opened."** Since 0.42.1 the
+build wrote the version number into the app after its signature was applied, which
+broke the signature, and macOS calls a downloaded app with a broken signature
+"damaged" with no way to open it. The signature is now re-applied after that step,
+and the build fails if it is not valid. The DMG is still not signed by an Apple
+developer account or notarized, so macOS asks once before the first launch: open the
+app, then System Settings > Privacy & Security > Open Anyway (macOS 14 and earlier:
+right-click the app > Open). After that it opens normally.
+
 ### What changed in 0.42.6
 
 **A person's first name or surname alone is replaced everywhere.** Once a field label

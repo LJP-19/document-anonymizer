@@ -197,13 +197,34 @@ def build(clean: bool = True) -> Path:
     print("running:", " ".join(cmd), flush=True)
     subprocess.run(cmd, check=True, cwd=ROOT)
     if sys.platform == "darwin":
-        _stamp_bundle_version(dist / f"{BUNDLE_NAME}.app")
+        app = dist / f"{BUNDLE_NAME}.app"
+        _stamp_bundle_version(app)
+        _reseal_bundle_signature(app)
     return dist
+
+
+def _reseal_bundle_signature(app: Path) -> None:
+    """Re-apply the ad-hoc signature PyInstaller gave the bundle, then VERIFY it.
+
+    PyInstaller signs the .app ad-hoc; the signature covers Info.plist. Editing
+    Info.plist afterwards (_stamp_bundle_version, 0.42.1) broke it, and macOS
+    reports a downloaded app with a broken signature as "damaged and can't be
+    opened" with no way through - every macOS release from 0.42.1 to 0.42.6.
+    Up to 0.42.0 the signature was intact and the app could be opened.
+
+    This is NOT a Developer ID signature and NOT notarization: the DMG stays
+    "-UNSIGNED" and Gatekeeper still asks the user to approve it once. The
+    Developer ID path (installer/macos/sign_and_package.sh) re-signs everything.
+    """
+    subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(app)], check=True)
+    # Fail the build rather than ship a bundle macOS will call damaged.
+    subprocess.run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app)], check=True)
 
 
 def _stamp_bundle_version(app: Path) -> None:
     """PyInstaller writes no version into Info.plist, so macOS reported the
-    app as "Version 0.0.0 (???)" in its crash dialog. Runs before signing."""
+    app as "Version 0.0.0 (???)" in its crash dialog. It edits a signed file, so
+    _reseal_bundle_signature must run right after it."""
     import plistlib
 
     plist = app / "Contents" / "Info.plist"

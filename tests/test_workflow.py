@@ -838,3 +838,26 @@ def test_the_release_job_publishes_checksums_and_a_manifest_with_minimal_permiss
     run = " ".join(str(s.get("run", "")) for s in release["steps"])
     assert "SHA256SUMS.txt" in run and "build-manifest.json" in run and "source_commit" in run
     assert "sha256sum -c" in run, "checksums are verified against the uploaded artifacts"
+
+
+def test_the_macos_bundle_signature_is_resealed_after_info_plist_is_edited():
+    """0.42.1-0.42.6: build.py edited Info.plist after PyInstaller signed the app, so
+    the signature broke and macOS called every download "damaged and can't be
+    opened". The reseal must follow the edit, be verified, and every DMG copy must
+    be checked in CI - not only the Developer-ID-signed one."""
+    import ast
+
+    build = (WORKFLOW.parents[2] / "buildtools" / "build.py").read_text()
+    stamp = build.index("_stamp_bundle_version(app)")
+    reseal = build.index("_reseal_bundle_signature(app)")
+    assert stamp < reseal, "the signature must be re-applied AFTER Info.plist is edited"
+    fn = next(n for n in ast.walk(ast.parse(build))
+              if isinstance(n, ast.FunctionDef) and n.name == "_reseal_bundle_signature")
+    body = ast.unparse(fn)
+    assert "'--sign', '-'" in body and "'--verify'" in body and "check=True" in body
+
+    step = next(s for s in _workflow()["jobs"]["macos"]["steps"]
+                if "Mount each DMG" in s.get("name", ""))
+    run = step["run"]
+    verify = run.index("codesign --verify")
+    assert verify < run.index('if [ "$2" = "signed" ]'), "the UNSIGNED copy must be verified too"

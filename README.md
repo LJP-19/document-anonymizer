@@ -319,8 +319,10 @@ document receive the same pseudonym. Fixing this needs relationship inference
 that V1 does not attempt. Edit one of them manually if it matters.
 
 **Unsigned builds.** The `.exe` triggers SmartScreen and the `.dmg` triggers
-Gatekeeper ("damaged and can't be opened"). For internal use, macOS users can
-clear the quarantine flag once:
+Gatekeeper once: open the app, then System Settings > Privacy & Security >
+Open Anyway (macOS 14 and earlier: right-click the app > Open). A "damaged and
+can't be opened" message means the app's own signature is broken - the build
+fails on that since 0.42.7 (it shipped in 0.42.1-0.42.6). For those versions:
 `xattr -dr com.apple.quarantine /Applications/DocumentAnonymizer.app`.
 Distributing outside the firm needs an Apple Developer ID ($99/yr) plus
 `codesign` and `notarytool` steps in the workflow, and ideally a Windows code
