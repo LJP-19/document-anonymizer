@@ -73,11 +73,11 @@ def _cand(text, pii_type, source=Source.NER, line_text=None, page=0, line_no=0):
 def test_a_company_typed_as_a_person_is_flagged_and_nothing_else_changes():
     from app.decisions.manager import DecisionManager, DecisionState
 
+    # A value nothing confirms (no label) - the kind that waits for review anyway.
     c = _cand("Acme Manufacturing Inc.", PiiType.PERSON, line_text="Employer: Acme Manufacturing Inc.")
-    c.label_confirmed = True  # stands in for a label-bound value
     manager = DecisionManager()
     manager.register([c])
-    assert manager.state(c) is DecisionState.ACCEPTED
+    state_before = manager.state(c)
 
     check_types([c], auditor=_TypeFake({"Acme Manufacturing Inc.": "organization"}))
 
@@ -85,11 +85,21 @@ def test_a_company_typed_as_a_person_is_flagged_and_nothing_else_changes():
     assert "a company or organization" in c.review_reason and "not a person's name" in c.review_reason
     assert c.pii_type is PiiType.PERSON, "flag-only: the type must never be changed"
     assert c.text == "Acme Manufacturing Inc."
-    assert manager.state(c) is DecisionState.ACCEPTED, "flag-only: the stored decision is not rewritten"
-    # ...but the flag is a veto at the transformation boundary (0.42.0): the
-    # automatic approval no longer holds, so the plan refuses it.
+    assert manager.state(c) is state_before, "flag-only: the stored decision is not rewritten"
+
+
+def test_a_sure_value_is_never_flagged_or_even_asked_about():
+    """Owner's rule (0.44.1): what the app is sure of is redacted whatever the AI
+    thinks of its type; the model is not consulted about it."""
     from app.decisions.authorization import assess
-    assert not assess(c).eligible
+
+    c = _cand("Acme Manufacturing Inc.", PiiType.PERSON, line_text="Employer: Acme Manufacturing Inc.")
+    c.label_confirmed = True  # a label-bound value
+    assert assess(c).eligible
+    fake = _TypeFake({"Acme Manufacturing Inc.": "organization"})
+    check_types([c], auditor=fake)
+    assert not c.needs_review and c.review_reason == ""
+    assert assess(c).eligible
 
 
 def test_agreement_flags_nothing():
@@ -191,7 +201,9 @@ def test_analyse_runs_the_type_check_only_when_the_model_phase_is_on(tmp_path):
 
     path = str(tmp_path / "d.pdf")
     pdf = pymupdf.open()
-    pdf.new_page().insert_text((72, 100), "Taxpayer name: Mark Jones", fontsize=11)
+    # No label: a name only a model found waits for review, so the AI's opinion
+    # on its type is shown there. (A label-confirmed name is never asked about.)
+    pdf.new_page().insert_text((72, 100), "The appraisal was signed by Mark Jones yesterday.", fontsize=11)
     pdf.save(path)
     pdf.close()
 
@@ -211,7 +223,9 @@ def test_through_the_real_pipeline_a_disagreement_reaches_the_review_list(tmp_pa
 
     path = str(tmp_path / "d.pdf")
     pdf = pymupdf.open()
-    pdf.new_page().insert_text((72, 100), "Taxpayer name: Mark Jones", fontsize=11)
+    # No label: a name only a model found waits for review, so the AI's opinion
+    # on its type is shown there. (A label-confirmed name is never asked about.)
+    pdf.new_page().insert_text((72, 100), "The appraisal was signed by Mark Jones yesterday.", fontsize=11)
     pdf.save(path)
     pdf.close()
 

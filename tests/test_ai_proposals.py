@@ -121,13 +121,15 @@ def test_the_model_cannot_make_a_figure_or_a_label_redactable():
     assert not any(t in texts for t in ("85,000", "2025", "Total wages", "Citizenship"))
 
 
-def test_a_strong_candidate_survives_an_ai_objection_but_is_flagged():
+def test_a_sure_value_is_redacted_whatever_the_ai_says():
+    """Owner's rule (0.44.1, superseding the 0.42.0 'flag it' behaviour): a value
+    the app is sure of without any AI is redacted exactly as with the AI review
+    off. The model's objection is recorded as evidence, never acted on."""
     _d, result, dm, _f = run("SSN: 123-45-6789", wrong=["123-45-6789"])
     (c,) = by_text(result, "123-45-6789")
-    # It SURVIVES (a weak model never deletes strong evidence) and is flagged -
-    # and a flag is an absolute veto on automatic redaction (0.42.0): it waits.
-    assert c.needs_review and "AI thinks" in c.review_reason
-    assert not dm.is_actionable(c) and dm.origin(c) == "REVIEW_REQUIRED"
+    assert not c.needs_review and "AI thinks" not in c.review_reason
+    assert dm.is_actionable(c) and dm.origin(c) != "REVIEW_REQUIRED"
+    assert any("AI objection noted" in e.detail for e in c.evidence)
 
 
 def test_every_line_of_a_long_page_reaches_the_model():
