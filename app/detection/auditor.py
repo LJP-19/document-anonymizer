@@ -675,11 +675,17 @@ def check_types(candidates: list[Candidate], auditor: Optional[LlmAuditor] = Non
     Each distinct (value, type) is asked once however often it repeats, and every
     occurrence is flagged together.
     """
+    from ..decisions.authorization import assess, confirmed_name_words
+
     warnings: list[str] = []
     groups: dict[tuple[str, str], list[Candidate]] = {}
+    words = confirmed_name_words(candidates)
     for candidate in candidates:
         family = _checkable_family(candidate)
-        if family:
+        # A value the app is sure of (its own label, a strict rule, a confirmed
+        # entity) is redacted whatever the model thinks of its type - owner's rule
+        # (0.44.1): the AI review never holds back what is redacted without it.
+        if family and not assess(candidate, words).eligible:
             groups.setdefault((candidate.normalized.lower(), family), []).append(candidate)
     if not groups:
         return warnings

@@ -660,6 +660,42 @@ def _propagate_confirmed_values(doc, candidates: list, protection) -> list:
     return candidates + new
 
 
+def _ai_sure(candidates: list):
+    """The predicate for 'the app is sure of this without any AI': the same
+    fail-closed policy that decides automatic redaction (authorization.assess)."""
+    from ..decisions.authorization import assess, confirmed_name_words
+
+    words = confirmed_name_words(candidates)
+    return lambda c: assess(c, words).eligible
+
+
+def _apply_deferred_ai_objections(candidates: list, objections: list, warnings: list) -> list:
+    """Apply the AI review's objections ONLY to what is not already sure.
+
+    Owner's rule (0.44.1, reported on a Mac with the AI review on): the app must
+    redact every value it is sure of exactly as it does with the AI review off or
+    skipped; the AI may only remove or hold back what would have waited for review
+    anyway. Before this, an objection held a label-confirmed value - which also
+    took it out of the apply-to-all set, so its other pages were missed - and
+    dropped confident detections outright.
+    """
+    if not objections:
+        return candidates
+    sure = _ai_sure(candidates)
+    flagged_total = 0
+    for values, what in objections:
+        candidates, removed, flagged = apply_ai_objections(candidates, values, what, is_sure=sure)
+        flagged_total += flagged
+        if removed or flagged:
+            log.debug("AI objections (%s): removed %d, flagged %d", what, removed, flagged)
+    if flagged_total:
+        warnings.append(
+            f"the AI questioned {flagged_total} detection(s) that were waiting for review "
+            "anyway; its opinion is shown in the review list"
+        )
+    return candidates
+
+
 def _retype_known_name_components(candidates: list) -> list:
     """A registered person's name word that a MODEL typed as a place or company
     ("Torvin confirmed ..." tagged GPE) is that person: the field label that
@@ -1424,6 +1460,7 @@ def analyse(
     if beside:
         candidates = resolve_overlaps(candidates + beside)
 
+    ai_objections: list = []      # (values, what) - applied after label confirmation
     # Pass 7 - LLM audit. Advisory only: everything it names is located in the
     # real text by exact search, then goes through label stripping and overlap
     # resolution like any other candidate.
@@ -1433,11 +1470,9 @@ def analyse(
         )
         warnings.extend(audit_warnings)
         if wrongly_flagged:
-            candidates, removed, flagged = apply_ai_objections(
-                candidates, set(wrongly_flagged), "a label or business fact"
-            )
-            if removed or flagged:
-                log.debug("AI objections: removed %d weak, flagged %d strong", removed, flagged)
+            # Applied later, once label confirmation and apply-to-all have run:
+            # an objection may only touch what the app is NOT sure of.
+            ai_objections.append((set(wrongly_flagged), "a label or business fact"))
         if additions:
             additions = strip_label_overlaps(additions, labels)
             candidates = resolve_overlaps(candidates + additions)
@@ -1456,14 +1491,7 @@ def analyse(
         warnings.extend(adjudication_warnings)
         rejected = {r for r in rejected if r.lower() not in label_agreed}
         if rejected:
-            candidates, removed, flagged = apply_ai_objections(
-                candidates, set(rejected), "form text or a business fact"
-            )
-            if flagged:
-                warnings.append(
-                    f"the AI questioned {flagged} detection(s) backed by strong evidence; "
-                    "they were kept and flagged for review"
-                )
+            ai_objections.append((set(rejected), "form text or a business fact"))
 
     candidates = _drop_label_text(candidates, labels)
     candidates = _drop_bare_states(candidates)
@@ -1543,6 +1571,7 @@ def analyse(
     # everywhere, with the same type (and so the same pseudonym).
     candidates = _unify_with_confirmed_values(candidates)
     candidates = _propagate_confirmed_values(doc, candidates, protection)
+    candidates = _apply_deferred_ai_objections(candidates, ai_objections, warnings)
     if held:
         log.debug("held %d unconfirmed proposal(s) for review", held)
     rejected_by_gate = sum(1 for d in gate_log if d.action == "reject")

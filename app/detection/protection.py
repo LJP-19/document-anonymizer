@@ -388,7 +388,7 @@ def _note(candidate: Candidate, text: str) -> None:
 
 
 def apply_ai_objections(
-    candidates: list[Candidate], objected: set[str], what: str
+    candidates: list[Candidate], objected: set[str], what: str, is_sure=None
 ) -> tuple[list[Candidate], int, int]:
     """What the local model says is NOT identity, applied with proportion.
 
@@ -412,6 +412,14 @@ def apply_ai_objections(
     dropped = flagged = 0
     for candidate in candidates:
         if fold(candidate.normalized) not in wanted:
+            kept.append(candidate)
+            continue
+        if is_sure is not None and is_sure(candidate):
+            # Owner's rule (0.44.1): what the app is SURE of is redacted whether or
+            # not the AI review runs. The model's opinion is recorded, never acted on:
+            # holding a label-confirmed value also stopped it from being applied to
+            # its other occurrences, so one objection unpicked a whole document.
+            _note(candidate, f"AI objection noted, not applied - this value is confirmed ({what})")
             kept.append(candidate)
             continue
         if candidate_strength(candidate) == "strong":
