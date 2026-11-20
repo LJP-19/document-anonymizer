@@ -1,3 +1,22 @@
+### What changed in 0.44.1
+
+**The AI review no longer holds back PII the app is sure of.** With a model
+downloaded (the AI review on), the app redacted fewer values automatically than with
+the AI review off, missed some values on later pages, and pressing Skip AI review
+did not bring them back. The cause: when the AI model objected to a value - and the
+small models often do - even a value confirmed by its own field label (a name, an
+SSN, an address) was moved to the review list instead of being redacted, which also
+stopped it from being applied to its other pages; some confident detections were
+removed outright.
+
+Now everything the app is sure of - a value its field label confirms, an identifier
+matched by a strict rule, another occurrence of a confirmed person or value - is
+redacted exactly as with the AI review off or skipped. The AI review still adds
+suggestions and comments on uncertain items in the review list; it can no longer
+hold back or remove a sure value. Tested with a stand-in model that objects to every
+value: the automatic redactions are identical to the AI-off run, including when Skip
+is pressed part-way.
+
 ### What changed in 0.44.0
 
 **Sideways pages are read the right way up.** Tax software often prints a landscape

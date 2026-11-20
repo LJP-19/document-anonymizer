@@ -2843,3 +2843,21 @@ Developer ID signature: the DMG stays -UNSIGNED and Gatekeeper still asks once
   occurrence overlapping an `ambiguous` candidate and runs `_component_context_is_ambiguous`
   on a lone name word; `_shares_confirmed_name` needs the confirmed word LAST (the shared
   surname) and no unknown capitalised word after it ("Quell Harrowgate Partners").
+
+## 0.44.1: the AI review never holds back or removes what the app is sure of (owner's rule)
+
+Reported on a Mac (AI review on): fewer automatic redactions than Windows, values
+missed on other pages, Skip did not help. Cause: `apply_ai_objections` ran right after
+each AI phase, BEFORE label confirmation and apply-to-all; it flagged label-confirmed
+values (needs_review - an absolute authorization veto, and it removed them from the
+unify/propagate "confirmed" sets, so their other pages were missed) and DROPPED every
+non-"strong" candidate, confident NER included. `check_types` flagged sure values too.
+- Objections are now collected (`ai_objections`) and applied by
+  `engine._apply_deferred_ai_objections` AFTER annotate_label_binding, the corroboration
+  hold, unify and propagate. `apply_ai_objections(..., is_sure=)`: a candidate
+  `authorization.assess` would auto-approve gets an evidence note only.
+- `check_types` never asks about (or flags) an assess-eligible candidate.
+- Test: `tests/test_ai_never_holds_sure_pii.py` - a model that objects to everything,
+  with and without Skip part-way, must leave the automatic redactions identical to the
+  AI-off run. Mutation-checked: without the fix it held the fictional SSNs, names,
+  street and ZIP. Never let an AI result veto an assess-eligible candidate again.

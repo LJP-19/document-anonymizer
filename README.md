@@ -62,7 +62,7 @@ What is implemented and covered by tests:
 | Partial values widened to the whole value | done |
 | Joint / compound name fields ("JP & ML") split per person | done |
 | Subject identification and document-wide propagation | done |
-| AI review | **user-chosen model, downloaded on first launch.** Reviews every page: finds what the other layers missed (redacted AND flagged for review - Keep to undo), checks each redaction, and flags a name/company/place whose type looks wrong (flag only). Slow on slow machines: the AI review checkbox (saved) turns it off, Skip AI review stops it at once - even in the middle of a page - and keeps what it already found, and the progress line shows an estimate. DOCANON_LLM_BUDGET_SECONDS adds a time cap (none by default) |
+| AI review | **user-chosen model, downloaded on first launch.** Reviews every page: finds what the other layers missed (redacted AND flagged for review - Keep to undo), checks each redaction, and flags a name/company/place whose type looks wrong (flag only). It never holds back or removes a value the app is sure of: automatic redactions are the same with the AI review on, off or skipped (0.44.1). Slow on slow machines: the AI review checkbox (saved) turns it off, Skip AI review stops it at once - even in the middle of a page - and keeps what it already found, and the progress line shows an estimate. DOCANON_LLM_BUDGET_SECONDS adds a time cap (none by default) |
 
 | Settings window (Ctrl+, / Cmd+,): Change AI model, Fast mode, AI review, Careful mode, output folder - saved between sessions | done (0.43.0) |
 | Fast mode: skip the AI review and the re-check (same automatic redactions, fewer review suggestions) | done (0.43.0) |
