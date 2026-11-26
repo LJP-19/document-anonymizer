@@ -105,3 +105,31 @@ def test_skip_ai_review_part_way_keeps_every_automatic_redaction(baseline, stop_
     _s, got = _auto_redacted(True, fake)
     assert auditor.stop_requested()
     assert expected - got == set(), f"Skip lost sure PII: {sorted(expected - got)[:8]}"
+
+
+class _FormTextAuditor(_HostileAuditor):
+    """Reproduces what the real 1.5B model did on this return (0.44.2): it
+    'found' the form's own line numbers and checkbox options."""
+
+    def audit(self, text, detected):
+        from app.detection.auditor import AuditFinding
+
+        self._tick()
+        junk = [("11b", "birthplace"), ("25c", "birthplace"), ("Full-time", "marital status"),
+                ("Permanently", "marital status"), ("Combat zone", "fax")]
+        return [AuditFinding(t, k) for t, k in junk if t in text], []
+
+    def _chat(self, **kwargs):
+        self._tick()
+        return {"choices": [{"message": {"content": '{"verdicts": []}'}}]}
+
+
+def test_form_text_suggested_by_the_ai_never_reaches_the_review_list(baseline):
+    _texts, expected = baseline
+    fake = _FormTextAuditor(set())
+    s, got = _auto_redacted(True, fake)
+    assert fake.calls > 0
+    junk = {"11b", "25c", "Full-time", "Permanently", "Combat zone"}
+    listed = [c.text for c in s.decisions.awaiting_review(s.candidates) if c.text in junk]
+    assert listed == [], f"form text from the AI is in the review list: {listed}"
+    assert got == expected

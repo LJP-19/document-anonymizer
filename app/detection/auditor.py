@@ -1434,7 +1434,7 @@ def audit_document(
                         "suggested by the AI review as uncertain - nothing else detected it"
                         if finding.uncertain
                         else "suggested by the AI review - nothing else detected it. "
-                        "It is redacted unless you press Keep"
+                        "Left readable until you press Redact"
                     )
                     if len(hits) > 1:
                         reason += f" (the same text occurs {len(hits)} times in this region)"

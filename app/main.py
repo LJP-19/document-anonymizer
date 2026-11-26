@@ -173,10 +173,84 @@ def _self_test() -> int:
         result_path.write_text("\n".join(lines), encoding="utf-8")
         return 1
 
+    # End to end, inside the shipped app: a fictional two-page return whose values
+    # repeat on a page with no captions. Every occurrence must be replaced, with one
+    # replacement per value, and the saved file must pass the export check. CI runs
+    # this in the app copied out of the DMG, so the Mac build is proven on a whole
+    # document, not just on loading its models (0.44.2).
+    try:
+        problems = _self_test_document()
+        if problems:
+            for problem in problems:
+                _out(f"FAIL: end-to-end document: {problem}")
+            result_path.write_text("\n".join(lines), encoding="utf-8")
+            return 1
+        _out("  End-to-end document (apply to all, one replacement per value, export check): OK")
+    except Exception as exc:  # noqa: BLE001
+        _out(f"FAIL: end-to-end document: {type(exc).__name__}: {exc}")
+        _out(traceback.format_exc())
+        result_path.write_text("\n".join(lines), encoding="utf-8")
+        return 1
+
     _out("Self-test PASSED - the frozen build's detection pipeline works.")
     result_path.write_text("\n".join(lines), encoding="utf-8")
     _out(f"(This result was also written to: {result_path})")
     return 0
+
+
+def _self_test_document() -> list[str]:
+    """Anonymize a fictional return and report what is wrong (empty = all good)."""
+    import os
+    import tempfile
+
+    import pymupdf
+
+    from .document.pdflock import PDF_LOCK
+    from .session import AnonymizationSession
+
+    os.environ["DOCANON_LLM"] = "0"          # no model ships; the AI review is optional
+    name, ssn, city = "Torvin Quell", "512-48-7391", "Lakeside City"
+    problems: list[str] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        src, out = os.path.join(tmp, "self_test.pdf"), os.path.join(tmp, "self_test_out.pdf")
+        with PDF_LOCK:
+            pdf = pymupdf.open()
+            p1 = pdf.new_page(width=612, height=792)
+            for x, y, text, font in [
+                (72, 80, "Your first name and middle initial", "hebo"), (72, 92, "Torvin", "cour"),
+                (260, 80, "Last name", "hebo"), (260, 92, "Quell", "cour"),
+                (420, 80, "Your social security number", "hebo"), (420, 92, ssn, "cour"),
+                (72, 130, "City, town, or post office", "hebo"), (72, 142, city, "cour"),
+            ]:
+                p1.insert_text((x, y), text, fontname=font, fontsize=7 if font == "hebo" else 10)
+            p2 = pdf.new_page(width=612, height=792)
+            p2.insert_text((72, 60), f"{name}  {ssn}", fontname="cour", fontsize=10)
+            p2.insert_text((72, 100), f"Statement 1 - {city}", fontname="cour", fontsize=10)
+            p2.insert_text((72, 140), "Total wages   85,000", fontname="cour", fontsize=10)
+            pdf.save(src)
+            pdf.close()
+        session = AnonymizationSession(source_path=src)
+        session.analyse(use_llm=False)
+        session.decisions.approve_auto_eligible(session.candidates)
+        plan = session.plan()
+        _apply, report = session.process(out)
+        if not report.passed:
+            problems.append("export check failed: " + ", ".join(c.name for c in report.checks if not c.passed))
+        with PDF_LOCK:
+            with pymupdf.open(out) as d:
+                pages = [d[0].get_text(), d[1].get_text()]
+        for value in ("Torvin", "Quell", ssn, city):
+            for n, text in enumerate(pages, 1):
+                if value in text:
+                    problems.append(f"a value is still readable on page {n}")
+        if "85,000" not in pages[1]:
+            problems.append("an amount was changed")
+        replacements = {t.replacement for t in plan.targets if t.original == ssn}
+        if len(replacements) != 1:
+            problems.append(f"the SSN got {len(replacements)} different replacements")
+        if session.mapping_file and os.path.exists(session.mapping_file):
+            os.remove(session.mapping_file)   # fictional; leave nothing behind
+    return problems
 
 
 def main() -> int:

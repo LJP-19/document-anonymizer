@@ -190,7 +190,9 @@ def test_what_waited_before_still_waits():
 
 
 def test_the_reviewer_is_told_the_truth_about_what_will_happen(tmp_path):
-    """The old reason said the value was "KEPT unless you press Redact"."""
+    """What the note says must be what happens. Since 0.42.0 (fail-closed
+    authorization) a finding only the AI made waits for a person: it is left
+    readable until Redact is pressed. 0.44.1 and earlier said the opposite."""
     from app.detection.auditor import audit_document
     from app.session import AnonymizationSession
 
@@ -204,8 +206,10 @@ def test_the_reviewer_is_told_the_truth_about_what_will_happen(tmp_path):
     assert additions, "the stand-in model's finding should have been located and typed"
     finding = additions[0]
     assert finding.needs_review
-    assert "redacted unless you press Keep" in finding.review_reason
-    assert "KEPT" not in finding.review_reason
+    assert "Left readable until you press Redact" in finding.review_reason
+    assert "redacted unless you press Keep" not in finding.review_reason
+    from app.decisions.authorization import assess
+    assert not assess(finding).eligible, "the note must match: it is not applied automatically"
 
 
 # ------------------ the safety filters did not loosen: nothing waits now

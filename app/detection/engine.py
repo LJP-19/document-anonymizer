@@ -660,6 +660,33 @@ def _propagate_confirmed_values(doc, candidates: list, protection) -> list:
     return candidates + new
 
 
+_LINE_NUMBER = re.compile(r"^\(?\d{1,2}[a-z]?\)?$", re.I)
+
+
+def _drop_form_text_ai_findings(additions: list, styles: set) -> list:
+    """An AI review suggestion printed in the FORM'S OWN typeface is the form's text,
+    and a bare line number ("11b", "25c") is never identity.
+
+    Measured on the fictional joint return with the default 1.5B model (0.44.2):
+    all 34 AI suggestions were form text - line numbers typed as a birthplace,
+    checkbox options ("Full-time", "Permanently", "Combat zone") typed as marital
+    status or fax. None was applied (they wait for review) but they buried the real
+    review items. Filled-in values are set in the value font, so a value the model
+    finds is never in a form style - the same signal veto_form_styled_proposals
+    uses for the other models' proposals.
+    """
+    from .layout_style import in_form_style
+
+    kept = []
+    for c in additions:
+        if _LINE_NUMBER.match(c.text.strip()):
+            continue
+        if styles and c.line is not None and in_form_style(c.line, styles):
+            continue
+        kept.append(c)
+    return kept
+
+
 def _ai_sure(candidates: list):
     """The predicate for 'the app is sure of this without any AI': the same
     fail-closed policy that decides automatic redaction (authorization.assess)."""
@@ -1475,6 +1502,7 @@ def analyse(
             ai_objections.append((set(wrongly_flagged), "a label or business fact"))
         if additions:
             additions = strip_label_overlaps(additions, labels)
+            additions = _drop_form_text_ai_findings(additions, document_form_styles)
             candidates = resolve_overlaps(candidates + additions)
 
     # Run the financial guard again, last. Propagation and the audit pass both
