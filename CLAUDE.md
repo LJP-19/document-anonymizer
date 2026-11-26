@@ -2861,3 +2861,27 @@ non-"strong" candidate, confident NER included. `check_types` flagged sure value
   with and without Skip part-way, must leave the automatic redactions identical to the
   AI-off run. Mutation-checked: without the fix it held the fictional SSNs, names,
   street and ZIP. Never let an AI result veto an assess-eligible candidate again.
+
+## 0.44.2: apply-to-all and consistency, measured on the real returns (counts only)
+
+Checker: a script that runs a document through the real session with the AI review
+off and on, and reports one-replacement-per-value (case-insensitive), find_leftovers,
+originals surviving in the saved file, and AI-on vs AI-off automatic redactions. Real
+inputs are reported masked (hashes and shapes), never values.
+- `registry.pseudonym_for`: a cached PERSON pseudonym follows THIS occurrence's case
+  (`_case_like`) - "Lin" got the ALL-CAPS replacement of an earlier "LIN".
+- `engine._unify_with_confirmed_values`: (a) a value confirmed as PERSON and also as a
+  digit-only type (SSN, DOB... `_DIGIT_TYPES`) or a place/company is PERSON everywhere
+  when it has no digit, no street/place word and no org suffix (`retype_to_person` -
+  wrong-caption bindings gave one name three pseudonyms, one of them digits, and with
+  several confirmed types apply-to-all skipped the value entirely); (b) a lone confirmed
+  name WORD is that person (`NAME_WORD_EVIDENCE`, English/form-word guard `_common_word`,
+  short-name case guard, ambiguous context excluded); (c) a value typed place/company by
+  a model or carried-over type that is made of confirmed name words or a household name
+  is retyped PERSON. "sits on static boilerplate text" is settled by a confirmed value.
+- `_propagate_confirmed_values`: confirmed person name words on name-only lines (<= 4
+  tokens, all alphabetic, no common word) - the surname alone in a page header.
+- `_drop_form_text_ai_findings`: AI audit suggestions in a FORM style or shaped like a
+  line number are dropped (the 1.5B model suggested 34 such items on demo/joint_tw).
+- `app/main.py --self-test` anonymizes a generated fictional 2-page return inside the
+  frozen app (`_self_test_document`) - CI runs it on the app copied out of the DMG.

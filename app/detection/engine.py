@@ -461,9 +461,29 @@ _SETTLED_BY_CONFIRMED_VALUE = (
     "partial / incomplete detection",
     "matched on part of a known name",
     "not applied unless you confirm it",
+    # A confirmed value repeated in a running header ("Name(s) shown on return" on
+    # every page) is still that value - the header is the classic place it repeats.
+    "sits on static boilerplate text",
 )
 CONFIRMED_VALUE_EVIDENCE = "same value as a label-confirmed value elsewhere in the document"
 SHARED_NAME_EVIDENCE = "same value as a label-confirmed value: a name that includes a confirmed person's name"
+NAME_WORD_EVIDENCE = "same value as a label-confirmed value: a confirmed person's first name or surname"
+_PLACE_TYPES = {PiiType.ADDRESS, PiiType.CITY_STATE, PiiType.STREET}
+#: Types whose values always contain digits - a letters-only value cannot be one.
+_DIGIT_TYPES = {
+    PiiType.SSN, PiiType.ITIN, PiiType.EIN, PiiType.TIN, PiiType.IP_PIN, PiiType.DOB,
+    PiiType.PERSONAL_DATE, PiiType.PHONE, PiiType.FAX, PiiType.POSTAL_CODE,
+    PiiType.BANK_ACCOUNT, PiiType.ROUTING_NUMBER, PiiType.CARD_NUMBER, PiiType.ACCOUNT_ID,
+    PiiType.IP_ADDRESS, PiiType.MEDICARE_ID,
+}
+_STREET_OR_PLACE_WORDS = {
+    "st", "street", "ave", "avenue", "rd", "road", "dr", "drive", "ln", "lane", "blvd",
+    "boulevard", "ct", "court", "way", "pl", "place", "ter", "terrace", "cir", "circle",
+    "hwy", "highway", "pkwy", "parkway", "city", "town", "county", "village", "beach",
+    "heights", "park", "springs", "valley", "hills", "lake", "falls", "creek", "point",
+    "harbor", "port", "fort", "mount", "saint", "san", "santa", "los", "las", "new", "north",
+    "south", "east", "west", "apt", "suite", "unit", "box",
+}
 
 
 def _shares_confirmed_name(c, person_words: set) -> bool:
@@ -503,6 +523,24 @@ def _shares_confirmed_name(c, person_words: set) -> bool:
     return not _joined_to_another_entity(c, person_words)
 
 
+def _only_confirmed_name_words(c, person_words: set) -> bool:
+    from .textnorm import fold, looks_like_name_token
+
+    raw = c.text.split()
+    words = [fold(w.strip(".,;:()")) for w in raw]
+    return (2 <= len(words) <= 4 and all(w in person_words for w in words)
+            and all(looks_like_name_token(w.strip(".,;:()")) for w in raw)
+            and not any(ch.isdigit() for ch in c.text)
+            and not any(w in _STREET_OR_PLACE_WORDS for w in words)
+            and not (c.line is not None and _org_after(c)))
+
+
+def _org_after(c) -> bool:
+    from .entities_pass import ORG_SUFFIX_AFTER
+
+    return bool(ORG_SUFFIX_AFTER.match(c.line.text[c.end:]))
+
+
 def _unify_with_confirmed_values(candidates: list) -> list:
     """Every occurrence of a value a LABEL confirmed somewhere is that value.
 
@@ -531,21 +569,70 @@ def _unify_with_confirmed_values(candidates: list) -> list:
                 confirmed.setdefault(key, set()).add(c.pii_type)
     if not confirmed:
         return candidates
+    # A full name confirmed as a PERSON by its own label, and typed an address
+    # where it is the first line of a "name and address" block, is the person
+    # there too. Real 108-page return (0.44.2): the same name got a person's
+    # pseudonym on most pages and a city's on two.
+    #
+    # Generalised (0.44.2, same return): a caption that bound the wrong value typed
+    # one person's name ADDRESS, ORG_PRIVATE, SSN or DOB on some pages - each type
+    # its own registry key, so the same name got up to three different replacements
+    # (one of them digits), and with several confirmed types apply-to-all skipped
+    # the value altogether. A name confirmed as a PERSON anywhere is that person
+    # everywhere when every other type is impossible for a value with no digits
+    # (SSN, DOB...), or a place/company and the value has no street, place or
+    # company word.
+    from .entities_pass import ORG_SUFFIX_AFTER
+
+    retype_to_person = set()
+    for key, types in confirmed.items():
+        if PiiType.PERSON not in types or len(types) < 2 or any(ch.isdigit() for ch in key):
+            continue
+        words = key.split()
+        others = types - {PiiType.PERSON}
+        impossible = {t for t in others if t in _DIGIT_TYPES}
+        wordy = others - impossible
+        if wordy and (len(words) < 2 or not wordy <= (_PLACE_TYPES | {PiiType.ORG_PRIVATE})
+                      or any(w in _STREET_OR_PLACE_WORDS for w in words)
+                      or ORG_SUFFIX_AFTER.match(" " + key.split()[-1])):
+            continue
+        types.intersection_update({PiiType.PERSON})
+        retype_to_person.add(key)
     person_words: set = set()
     for key, types in confirmed.items():
         if PiiType.PERSON in types:
             person_words.update(key.split())
+    from .entities_pass import _component_context_is_ambiguous, _short_match_ok
+
     for c in candidates:
         if c.source is Source.MANUAL or getattr(c, "blackout", False):
             continue
-        if getattr(c, "label_confirmed", False) and not c.needs_review and not getattr(c, "ambiguous", False):
+        clean = (getattr(c, "label_confirmed", False) and not c.needs_review
+                 and not getattr(c, "ambiguous", False))
+        if clean and not (fold(c.text) in retype_to_person and c.pii_type is not PiiType.PERSON):
             continue                     # authorized by its own label already
         types = confirmed.get(fold(c.text))
+        note = CONFIRMED_VALUE_EVIDENCE
         if not types and c.pii_type is PiiType.PERSON and _shares_confirmed_name(c, person_words):
             types = {PiiType.PERSON}
             note = SHARED_NAME_EVIDENCE
-        else:
-            note = CONFIRMED_VALUE_EVIDENCE
+        elif (not types and not clean and c.pii_type in (_PLACE_TYPES | {PiiType.ORG_PRIVATE})
+              and (_only_confirmed_name_words(c, person_words)
+                   or (_shares_confirmed_name(c, person_words) and not any(ch.isdigit() for ch in c.text)
+                       and not any(fold(w) in _STREET_OR_PLACE_WORDS for w in c.text.split())))):
+            # Every word is a confirmed person's name word, but a model or a carried-
+            # over type called it a place or company (real return, 0.44.2: the
+            # filer's name in a page header typed ADDRESS and held).
+            types = {PiiType.PERSON}
+            note = SHARED_NAME_EVIDENCE
+        elif (not types and c.pii_type is PiiType.PERSON and c.line is not None
+              and len(fold(c.text).split()) == 1 and fold(c.text) in person_words
+              and len(fold(c.text)) >= 2 and _short_match_ok(c.text.strip())
+              and not _common_word(fold(c.text))
+              and not _component_context_is_ambiguous(c.line.text, c.start, c.end, person_words)):
+            # A confirmed person's first name or surname on its own: that person.
+            types = {PiiType.PERSON}
+            note = NAME_WORD_EVIDENCE
         if not types or len(types) != 1:
             continue
         kind = next(iter(types))
@@ -654,6 +741,45 @@ def _propagate_confirmed_values(doc, candidates: list, protection) -> list:
                         continue      # "Smith & Wesson" names something else
                     new.append(cand)
                     settled.setdefault(line.key(), []).append((start, end))
+    # A confirmed person's first name or surname printed on a line of its own, or
+    # in a line made only of names (a page header "Lin", a household line). Real
+    # 108-page return (0.44.2): the surname alone in a header on three pages was
+    # never detected, so it stayed readable there.
+    for word in sorted(person_words, key=len, reverse=True):
+        if len(word) < 2 or _common_word(word):
+            continue
+        for page in doc.pages:
+            for line in page.lines:
+                tokens = line.text.split()
+                if not tokens or len(tokens) > 4:
+                    continue
+                folded = [fold(t.strip(".,;:()")) for t in tokens]
+                if word not in folded:
+                    continue
+                if any(_common_word(t) or not t.isalpha() for t in folded if t):
+                    continue          # a sentence or a caption, not a line of names
+                for start, end in find_occurrences(line.text, word):
+                    if any(s0 <= start and end <= e0 for s0, e0 in settled.get(line.key(), [])):
+                        continue
+                    if any(s0 < end and start < e0 for s0, e0 in held_ambiguous.get(line.key(), [])):
+                        continue
+                    text = line.text[start:end]
+                    if not _short_match_ok(text) or ORG_SUFFIX_AFTER.match(line.text[end:]):
+                        continue
+                    if _component_context_is_ambiguous(line.text, start, end, person_words):
+                        continue
+                    rect = line.rect_for(start, end)
+                    if rect is None:
+                        continue
+                    cand = Candidate(
+                        pii_type=PiiType.PERSON, text=text, page_no=page.number, rect=rect, line=line,
+                        start=start, end=end, confidence=0.9, source=Source.COVERAGE,
+                        evidence=[Evidence(Source.COVERAGE, NAME_WORD_EVIDENCE, 0.9)],
+                    )
+                    if _joined_to_another_entity(cand, person_words):
+                        continue
+                    new.append(cand)
+                    settled.setdefault(line.key(), []).append((start, end))
     if not new:
         return candidates
     new, _log = CandidateGate(protection).run(new)
@@ -685,6 +811,21 @@ def _drop_form_text_ai_findings(additions: list, styles: set) -> list:
             continue
         kept.append(c)
     return kept
+
+
+def _common_word(word: str) -> bool:
+    """An ordinary word that is also somebody's name ("May", "Will", "Grace") is
+    never extended to other places on its own - only the full name is."""
+    from .heuristics import FORM_VOCABULARY
+
+    return (word in FORM_VOCABULARY or word in _MONTHS
+            or word.upper() in _STATE_CODES_SET())
+
+
+def _STATE_CODES_SET():
+    from .entities_pass import _STATE_CODES
+
+    return _STATE_CODES
 
 
 def _ai_sure(candidates: list):
@@ -1631,7 +1772,8 @@ def analyse(
     confirmed = probable = unresolved = 0
     for candidate in candidates:
         verdict = adjudicate(candidate)
-        if any(e.detail in (CONFIRMED_VALUE_EVIDENCE, SHARED_NAME_EVIDENCE) for e in candidate.evidence):
+        if any(e.detail in (CONFIRMED_VALUE_EVIDENCE, SHARED_NAME_EVIDENCE, NAME_WORD_EVIDENCE)
+               for e in candidate.evidence):
             # Its witness is the label that confirmed the same value elsewhere,
             # not this occurrence's own detector scores.
             verdict = Adjudication.CONFIRMED

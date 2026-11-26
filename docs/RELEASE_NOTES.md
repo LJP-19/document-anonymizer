@@ -1,3 +1,34 @@
+### What changed in 0.44.2
+
+Re-checked on real 108-page returns and on fictional returns with the AI review on
+(default 1.5B model) and off. Every value replaced everywhere, one replacement per
+value, nothing left readable in the saved file.
+
+**Apply to all, made consistent.**
+* A confirmed person's surname or first name standing on its own (a page header, a
+  line of names) is replaced there too; before, it stayed readable on a few pages.
+* The same name gets ONE replacement everywhere. Where a caption bound the wrong value,
+  one person's name had been treated as an address, a company or even an SSN or date
+  of birth on some pages - and got a different replacement there (sometimes digits).
+  A name confirmed as a person is that person everywhere.
+* A family member's name carried over as an address on later pages is the person.
+* A name repeated in a page header is replaced like everywhere else (it waited for
+  review because the header repeats on every page).
+* Each occurrence keeps its own capitals: "LIN" and "Lin" become "ABERNATHY" and
+  "Abernathy", not the capitals of whichever came first.
+
+**AI review: less noise.** The AI review no longer lists the form's own text (line
+numbers like "11b", checkbox options like "Full-time") for review - on a test joint
+return the review list went from 34 such items to 1. Its note now says what really
+happens: an AI-only suggestion is left readable until you press Redact.
+
+**macOS / Windows build check.** The built app's self-test now anonymizes a whole
+(fictional) document inside the shipped app - every occurrence replaced on both pages,
+one replacement per value, export check passed - on the app copied out of the DMG.
+
+**Known:** a page that is a scanned image (no text layer) cannot be read - the app
+marks it OCR REQUIRED and the export check reports it; review that page by eye.
+
 ### What changed in 0.44.1
 
 **The AI review no longer holds back PII the app is sure of.** With a model

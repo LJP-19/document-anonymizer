@@ -149,6 +149,11 @@ class EntityRegistry:
                 return composed
         if record is not None:
             record.occurrences += 1
+            if pii_type is PiiType.PERSON:
+                # One person, one pseudonym - written the way THIS occurrence is
+                # written. "LIN" on page 1 and "Lin" on page 9 gave "ABERNATHY" both
+                # times (0.44.2, real 108-page return); now "Abernathy" on page 9.
+                return _case_like(record.pseudonym, text)
             return record.pseudonym
 
         # A client already seen in another document keeps the same pseudonym,
@@ -245,3 +250,19 @@ class EntityRegistry:
     @property
     def records(self) -> list[EntityRecord]:
         return list(self._records.values())
+
+
+def _case_like(replacement: str, original: str) -> str:
+    """`replacement` in the letter case of `original`: ALL CAPS, all lower, or
+    capitalised words (each word, hyphenated parts included)."""
+    letters = [ch for ch in original if ch.isalpha()]
+    if not letters:
+        return replacement
+    if all(ch.isupper() for ch in letters):
+        return replacement.upper()
+    if all(ch.islower() for ch in letters):
+        return replacement.lower()
+    if replacement.isupper() or replacement.islower():
+        return "-".join(" ".join(w[:1].upper() + w[1:].lower() for w in part.split(" "))
+                        for part in replacement.split("-"))
+    return replacement

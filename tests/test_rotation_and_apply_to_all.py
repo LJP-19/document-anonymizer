@@ -156,3 +156,59 @@ def test_a_zip_confirmed_by_its_label_is_replaced_where_it_stands_alone(tmp_path
         assert "97035" not in o[1].get_text()
         assert "97035" not in o[0].get_text(), "the unlabelled occurrence was left"
     assert len({t.replacement for t in s.plan().targets if t.original == "97035"}) == 1
+
+
+# -- 0.44.2: what three real 108-page returns still showed (all values fictional) ----
+
+
+def _labelled_person_page(d):
+    p = d.new_page(width=612, height=792)
+    p.insert_text((72, 80), "Your first name and middle initial", fontname="hebo", fontsize=7)
+    p.insert_text((72, 92), "Torvin", fontname="cour", fontsize=10)
+    p.insert_text((260, 80), "Last name", fontname="hebo", fontsize=7)
+    p.insert_text((260, 92), "Quell", fontname="cour", fontsize=10)
+    p.insert_text((72, 130), "Full name", fontname="hebo", fontsize=7)
+    p.insert_text((72, 142), "Torvin Quell", fontname="cour", fontsize=10)
+    return p
+
+
+def test_a_confirmed_surname_alone_on_a_line_is_replaced_in_each_occurrences_case(tmp_path):
+    """The surname alone in a page header was never detected; and a cached ALL-CAPS
+    replacement was reused for a Capitalised occurrence."""
+    d = pymupdf.open()
+    _labelled_person_page(d)
+    for text in ("QUELL", "Quell"):
+        p = d.new_page(width=612, height=792)
+        p.insert_text((480, 40), text, fontname="cour", fontsize=9)
+        p.insert_text((72, 200), "Total wages   85,000", fontname="cour", fontsize=10)
+    src = tmp_path / "lone.pdf"
+    d.save(str(src))
+    d.close()
+    s, report, out = _run(src, tmp_path)
+    with pymupdf.open(str(out)) as o:
+        upper, title = o[1].get_text(), o[2].get_text()
+    assert "QUELL" not in upper and "Quell" not in title
+    by_page = {t.page_no: t.replacement for t in s.plan().targets if t.page_no in (1, 2)}
+    assert by_page[1].isupper(), by_page
+    assert by_page[2][:1].isupper() and not by_page[2].isupper(), by_page
+    assert by_page[1].lower() == by_page[2].lower(), "one person, one surname pseudonym"
+
+
+def test_a_name_bound_under_the_wrong_caption_keeps_its_one_pseudonym(tmp_path):
+    """A caption that binds the wrong value typed one person's name ADDRESS on one
+    page: it got a city's pseudonym there and a person's everywhere else."""
+    d = pymupdf.open()
+    _labelled_person_page(d)
+    p = d.new_page(width=612, height=792)
+    p.insert_text((72, 80), "City, town, or post office", fontname="hebo", fontsize=7)
+    p.insert_text((72, 92), "Torvin Quell", fontname="cour", fontsize=10)
+    src = tmp_path / "wrong_caption.pdf"
+    d.save(str(src))
+    d.close()
+    s, report, out = _run(src, tmp_path)
+    targets = [t for t in s.plan().targets if t.original == "Torvin Quell"]
+    assert {t.page_no for t in targets} == {0, 1}, targets
+    assert {t.pii_type.name for t in targets} == {"PERSON"}
+    assert len({t.replacement.lower() for t in targets}) == 1
+    with pymupdf.open(str(out)) as o:
+        assert "Torvin" not in o[1].get_text()
