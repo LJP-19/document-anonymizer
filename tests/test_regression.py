@@ -220,7 +220,10 @@ def test_same_value_maps_to_same_pseudonym():
     r = EntityRegistry(scope="t")
     a = r.pseudonym_for(PiiType.PERSON, "John Smith")
     b = r.pseudonym_for(PiiType.PERSON, "john  smith")
-    assert a == b
+    c = r.pseudonym_for(PiiType.PERSON, "JOHN SMITH")
+    # One person, one pseudonym - written the way each occurrence is (0.44.2).
+    assert a.lower() == b.lower() == c.lower()
+    assert b == b.lower() and c == c.upper() and a[:1].isupper() and not a.isupper()
 
 
 def test_pseudonyms_are_deterministic_across_runs():
