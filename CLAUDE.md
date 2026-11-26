@@ -2885,3 +2885,7 @@ inputs are reported masked (hashes and shapes), never values.
   line number are dropped (the 1.5B model suggested 34 such items on demo/joint_tw).
 - `app/main.py --self-test` anonymizes a generated fictional 2-page return inside the
   frozen app (`_self_test_document`) - CI runs it on the app copied out of the DMG.
+- CI's "Install the LLM runtime" tries the known-good `llama-cpp-python==0.3.16` FIRST and
+  must START the engine (`llama_backend_init`) before accepting a version: a new release
+  installed cleanly on the Windows runner and crashed on start (0xe06d7363), failing the
+  0.44.2 build. The open-ended `>=0.3.16` is the last resort, not the first try.

@@ -883,3 +883,17 @@ def test_self_test_fails_when_the_bundled_ai_engine_cannot_load(monkeypatch):
     assert main_module._self_test() == 1
     content = (main_module._log_path().parent / "self-test-result.txt").read_text()
     assert "AI engine" in content and "libllama" in content
+
+
+def test_the_llm_runtime_must_start_not_just_install():
+    """0.44.2: a new llama-cpp-python release installed cleanly on the Windows
+    runner and then crashed in llama_backend_init (0xe06d7363). Installing is not
+    proof: every job starts the engine and falls through to the next version if it
+    does not, and tries the known-good pinned version first."""
+    for name, config in _build_jobs().items():
+        step = next(s for s in config["steps"] if "LLM runtime" in str(s.get("name", "")))
+        run = step["run"]
+        assert "llama_backend_init" in run, f"{name} never starts the engine it installs"
+        first = run.find("llama-cpp-python==0.3.16")
+        assert first != -1 and first < run.find("llama-cpp-python>=0.3.16"), (
+            f"{name} tries an unpinned newest release before the known-good one")

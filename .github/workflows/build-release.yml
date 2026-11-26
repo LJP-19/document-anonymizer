@@ -106,9 +106,16 @@ jobs:
         # A corrupt wheel on this CPU index killed builds before (CLAUDE.md):
         # fall back through specific, previously-good versions.
         run: |
-          for spec in "llama-cpp-python>=0.3.16" "llama-cpp-python==0.3.35" "llama-cpp-python==0.3.16"; do
+          # Known-good first; a version must also START the engine, not just install:
+          # a new release installed fine on Windows and crashed in llama_backend_init (0.44.2).
+          for spec in "llama-cpp-python==0.3.16" "llama-cpp-python==0.3.35" "llama-cpp-python>=0.3.16"; do
             for attempt in 1 2 3; do
-              pip install --no-cache-dir --retries 5 --timeout 60 "$spec" --extra-index-url "$LLAMA_INDEX" && exit 0
+              if pip install --no-cache-dir --retries 5 --timeout 60 "$spec" --extra-index-url "$LLAMA_INDEX"; then
+                if python -c "import llama_cpp; llama_cpp.llama_backend_init(); print('llama.cpp', llama_cpp.__version__, 'starts')"; then
+                  exit 0
+                fi
+                echo "::warning::$spec installed but the engine does not start - trying the next version"; break
+              fi
               echo "::warning::pip attempt $attempt failed for: $spec"; pip cache purge || true; sleep $((attempt * 10))
             done
           done
@@ -178,10 +185,17 @@ jobs:
       - name: Install the LLM runtime
         run: |
           $ok = $false
-          foreach ($spec in @("llama-cpp-python>=0.3.16", "llama-cpp-python==0.3.35", "llama-cpp-python==0.3.16")) {
+          # Known-good first; a version must also START the engine, not just install:
+          # a new release installed fine here and crashed in llama_backend_init (0.44.2).
+          foreach ($spec in @("llama-cpp-python==0.3.16", "llama-cpp-python==0.3.35", "llama-cpp-python>=0.3.16")) {
             for ($attempt = 1; $attempt -le 3; $attempt++) {
               pip install --no-cache-dir --retries 5 --timeout 60 $spec --extra-index-url $env:LLAMA_INDEX
-              if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+              if ($LASTEXITCODE -eq 0) {
+                python -c "import llama_cpp; llama_cpp.llama_backend_init(); print('llama.cpp', llama_cpp.__version__, 'starts')"
+                if ($LASTEXITCODE -eq 0) { $ok = $true }
+                else { Write-Warning "$spec installed but the engine does not start - trying the next version" }
+                break
+              }
               Write-Warning "pip attempt $attempt failed: $spec"; pip cache purge; Start-Sleep -Seconds ($attempt * 10)
             }
             if ($ok) { break }
@@ -286,9 +300,16 @@ jobs:
           install "$SPACY_MODEL_WHEEL"
       - name: Install the LLM runtime
         run: |
-          for spec in "llama-cpp-python>=0.3.16" "llama-cpp-python==0.3.35" "llama-cpp-python==0.3.16"; do
+          # Known-good first; a version must also START the engine, not just install:
+          # a new release installed fine on Windows and crashed in llama_backend_init (0.44.2).
+          for spec in "llama-cpp-python==0.3.16" "llama-cpp-python==0.3.35" "llama-cpp-python>=0.3.16"; do
             for attempt in 1 2 3; do
-              pip install --no-cache-dir --retries 5 --timeout 60 "$spec" --extra-index-url "$LLAMA_INDEX" && exit 0
+              if pip install --no-cache-dir --retries 5 --timeout 60 "$spec" --extra-index-url "$LLAMA_INDEX"; then
+                if python -c "import llama_cpp; llama_cpp.llama_backend_init(); print('llama.cpp', llama_cpp.__version__, 'starts')"; then
+                  exit 0
+                fi
+                echo "::warning::$spec installed but the engine does not start - trying the next version"; break
+              fi
               echo "::warning::pip attempt $attempt failed for: $spec"; pip cache purge || true; sleep $((attempt * 10))
             done
           done
